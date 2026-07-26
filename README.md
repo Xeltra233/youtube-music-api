@@ -81,7 +81,7 @@ go test -bench=. ./...
 
 - [x] 项目骨架 + 配置模块（`internal/config`）
 - [x] bot 接入文档（`docs/BOT-INTEGRATION.md`）
-- [ ] 匹配层 `internal/matching`（`display_name` / `match_score`）
+- [x] 匹配层 `internal/matching`（`display_name` / `match_score`）
 - [ ] InnerTube 搜索客户端 `internal/ytmusic`
 - [ ] 搜索服务层 `internal/search`
 - [ ] 会话与选歌层 `internal/session`
