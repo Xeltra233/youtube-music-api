@@ -9,4 +9,24 @@
 
 ## 追加需求
 
-（暂无）
+### 追加 1（2026-07-26，Task 3 执行中）
+
+> 记得给我改成go
+>
+> 我要高性能
+
+影响：技术栈由 Python/FastAPI 全面改为 Go。已作废的 Python 产物（`pyproject.toml`、`app/*.py`、`scripts/*.py`、`.venv`）需删除，`plan.md` / `tasks.md` 同步重写。R1–R10 需求本身不变。
+
+### 追加 2（2026-07-26，Task G1 收尾时）
+
+> 你写一个文档，我去给bot加上搜索歌曲的功能
+
+影响：新增需求 R12 —— 需要**先行交付**一份面向 bot 开发者的接口契约文档（`docs/BOT-INTEGRATION.md`），让用户可以与服务端并行开发 bot 侧搜索功能。文档必须明确标注每个接口的实现状态，并在后续 Task 实现完成后同步更新（Task G10 负责最终校订）。
+
+### 追加 3（2026-07-26，Task G1 收尾时）
+
+> 你他妈的文件给我写那的，项目全部放在C:\project\test\youtube-music-api
+>
+> 所有的文件都放这里
+
+影响：项目根目录从 `C:\Users\Xeltra\Desktop\ytmusic-bridge` 迁移到 `C:\project\test\youtube-music-api`（含 `.git`、`goal-1`、Go 源码），旧目录已删除。后续所有文件只允许创建在新根目录下。plan.md §2 / §8 的路径记录需同步。

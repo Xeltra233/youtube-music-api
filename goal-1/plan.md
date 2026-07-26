@@ -1,134 +1,157 @@
-# Plan：ytmusic-bridge（YouTube Music 搜索 + 下载 HTTP API，供 bot 调用）
+# Plan：ytmusic-bridge（Go 版｜YouTube Music 搜索 + 下载 HTTP API，供 bot 调用）
 
-## 1. 需求解析（从 input.md 提炼）
+> 技术栈变更记录：初版设计为 Python + FastAPI（提交 `62cfae0`…`609a5b1`），用户在 Task 3 期间追加要求「改成 Go / 我要高性能」（见 input.md 追加 1），本 plan 已整体重写为 Go 方案，Python 产物已删除。R1–R10 需求不变。
+
+## 1. 需求解析（从 input.md 提炼，未变）
 
 | 编号 | 需求 | 验收标准 |
 | --- | --- | --- |
-| R1 | 先在 GitHub 上找到可用的 YouTube Music 相关仓库并选型 | plan.md 中列出候选仓库（含 star / 语言 / 活跃度）与最终选择理由 |
-| R2 | 自己写一个项目，对外「导出 API」（HTTP API） | 项目可启动，`/docs` 或明确路由清单可访问，bot 可通过 HTTP 调用 |
+| R1 | 先在 GitHub 上找到可用的 YouTube Music 相关仓库并选型 | plan.md §3 列出候选仓库（star / 语言 / 活跃度）与最终选择理由 |
+| R2 | 自己写一个项目，对外「导出 API」（HTTP API） | 服务可启动，路由清单明确，bot 可通过 HTTP 调用 |
 | R3 | bot 转发「近似歌曲名」给本项目，本项目负责搜索 | `POST /search` 接受模糊关键词，返回排序后的候选列表 |
-| R4 | 返回「歌单」默认约 10 首，最大 20 首 | 默认 limit=10；`limit` 可传，超过 20 被夹到 20（或明确报错，见 §6 假设） |
-| R5 | 数量可配置，且配置权由 bot 侧决定；服务端必须支持到最大值 | 请求参数 `limit` 优先；服务端配置只提供默认值与硬上限 20 |
-| R6 | 搜不到那么多就返回能搜到的数量 | 结果条数 = min(可得数量, limit)，不足不报错，返回 `total` 字段 |
-| R7 | bot 可用「序号」选择 | `POST /download`（或 `/select`）接受 `index`（1-based，对应列表显示序号） |
-| R8 | bot 也可用「名字（歌单上显示的全名）」选择 | 接受 `title` / `name` 字段，与列表中 `display_name` 精确匹配，其次归一化匹配 |
-| R9 | 选中后项目去下载该音乐 | 下载得到音频文件（m4a/opus→mp3 可选），带基础元数据 |
-| R10 | 下载完成后把音乐「转发给 bot」 | API 直接返回音频二进制流（`GET /file/{token}` 或 `/download` 直接返回文件），bot 拿到后转发给用户 |
+| R4 | 返回「歌单」默认约 10 首，最大 20 首 | 默认 limit=10；`limit` 可传，超过 20 夹到 20 |
+| R5 | 数量可配置，配置权由 bot 侧决定；服务端必须支持到最大值 | 请求参数 `limit` 优先；服务端配置只给默认值与硬上限（上限不得低于 20） |
+| R6 | 搜不到那么多就返回能搜到的数量 | 返回条数 = min(可得数量, limit)，不足不报错，`total` 反映真实条数 |
+| R7 | bot 可用「序号」选择 | `POST /download` 接受 `index`（1-based，对应列表显示序号） |
+| R8 | bot 也可用「名字（歌单上显示的全名）」选择 | 接受 `name`，与 `display_name` 精确匹配，其次归一化/唯一模糊匹配 |
+| R9 | 选中后项目去下载该音乐 | 下载得到音频文件，带基础元数据 |
+| R10 | 下载完成后把音乐「转发给 bot」 | API 返回音频二进制流（或 JSON + `file_url` 供 bot 取回） |
+| R11（追加） | **用 Go 实现，高性能** | Go 原生 HTTP 服务；无 Python 运行期依赖；并发安全；提供压测/基准证据 |
+| R12（追加） | **先交付 bot 接入文档**，用户并行开发 bot 搜索功能 | `docs/BOT-INTEGRATION.md` 给出稳定接口契约、字段语义、错误码、示例代码，并标注实现状态 |
 
-## 2. 上下文与环境事实（已核验）
+## 2. 环境事实（已核验）
 
-- 平台：Windows 10/11，PowerShell，cwd `C:\Users\Xeltra`。
-- 已有工具（`Get-Command` 核验）：
-  - `git` = `C:\Program Files\Git\cmd\git.exe`
-  - `python` = `C:\Users\Xeltra\AppData\Local\miniconda3\python.exe`（Python 3.13.13，pip 26.0.1）
-  - `node` v?（`C:\Program Files\nodejs\node.exe`）、`npm`
-  - `uv` = `C:\Users\Xeltra\.local\bin\uv.exe`
-  - `ffmpeg` = `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe`（音频转码/合流可用）
-  - `docker` 存在（本项目不强依赖）
-  - `yt-dlp` **未安装**（需要作为 Python 依赖安装到项目虚拟环境，而不是全局改环境）
-- 项目根目录：`C:\Users\Xeltra\Desktop\ytmusic-bridge`（本 goal 新建）。
-- 网络（Task 2 实测结论，2026-07-26）：
-  - GitHub API 可直连（已成功调用 `api.github.com`）。
-  - **YouTube Music 搜索可直连**：`YTMusic().search("lemon kenshi yonezu", filter="songs", limit=20)` 1.18s 返回 20 条，**无需 proxy / 无需 cookies**。
-  - **YouTube 音频下载可直连**：`yt_dlp` 下载 `3NNhrqHZqlI` 耗时 5.59s，转码 mp3 成功；`ffprobe` → `{"format_name":"mp3","duration":"256.106667","size":"6148269","bit_rate":"192053"}`。
-  - 中文/日文查询正常：`"周杰伦 晴天"` → `SJKoWAd5ySo | 晴天 | 周杰倫 | 4:30`；`"米津玄師 レモン"` → `3NNhrqHZqlI | Lemon | Kenshi Yonezu`。
-  - `ffmpeg_location` 需显式传入 yt-dlp（本机 ffmpeg 在 `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin`，虽在 PATH 但显式指定更稳）。
+- 平台：Windows，PowerShell，项目根 **`C:\project\test\youtube-music-api`**（2026-07-26 按用户要求从 `C:\Users\Xeltra\Desktop\ytmusic-bridge` 迁移，旧目录已删除；`.git` 一并迁移，历史保留）。所有新文件只允许放在此根目录下。
+- `go version go1.26.4 windows/amd64`；`GOPATH=C:\Users\Xeltra\go`；`GOPROXY=https://proxy.golang.org,direct`。
+- `ffmpeg` = `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe`（转码可用，`ffprobe` 同目录）。
+- `git` 可用；仓库已初始化，历史提交 `62cfae0` / `8d88720` / `609a5b1`。
+- **网络实测结论（Python 探针阶段取得，对 Go 同样成立，因为走同一套 HTTP 端点）**：
+  - YouTube Music 搜索接口可直连，1.18s 返回 20 条，无需代理/cookies。
+  - YouTube 音频下载可直连，单曲 4~6s 完成下载+mp3 转码；`ffprobe` 校验 `duration=256.1s, bit_rate≈192k`。
+  - 中文/日文查询正常。
+  - 上游 `limit` 是「至少 N」语义，一页固定 20 条 → 服务端必须硬截断。
+  - 搜索**永不返回空**：乱码 query 也返回 20 条无关结果 → 需 `match_score` + 可选 `min_score` 才能让 R6 真正可用。
 
-## 3. GitHub 选型调研（R1，数据来自 api.github.com，2026-07-26）
+## 3. GitHub 选型（R1｜Go 生态，数据来自 api.github.com 2026-07-26）
 
-搜索/元数据来源仓库候选：
+### 3.1 搜索/元数据
 
-| 仓库 | Stars | 语言 | 最近 push | 用途评估 |
+| 仓库 | Stars | 语言 | 最近 push | 评估 |
 | --- | --- | --- | --- | --- |
-| `sigma67/ytmusicapi` | 2883 | Python | 2026-07-25 | **首选**。YouTube Music 非官方 API，直接提供 `search(query, filter="songs", limit=N)`，返回 `videoId/title/artists/album/duration`，无需登录即可搜索；维护非常活跃 |
-| `LuanRT/YouTube.js` | 5071 | TypeScript | 2026-07-03 | 备选（Node 生态 InnerTube 客户端），功能强但需要引入 Node 服务，与 Python 下载栈混用成本高 |
-| `nick42d/youtui` | 194 | Rust | 近期 | Rust TUI+API，语言栈不匹配 |
-| `z-huang/InnerTune` | 5995 | Kotlin | 2025-11-13 | Android 客户端，不适合做服务端 |
-| `deepjyoti30/ytmdl` | 3523 | Python | 2024-08-15 | CLI 工具（YouTube→mp3+元数据），可作为「元数据补全」思路参考，但已近两年未更新，不作为依赖 |
-| `zerodytrash/YouTube-Internal-Clients` | 593 | Python | 2022 | 仅作 InnerTube 客户端参数参考资料 |
+| `raitonoberu/ytmusic` | 24 | Go | 2024-03-24 | Go 版 YouTube Music 搜索库。**作为 InnerTube 协议参考实现**，但 star 少、近两年未更新，直接依赖风险高 |
+| `sigma67/ytmusicapi` | 2883 | Python | 2026-07-25 | Python 库，**作为协议权威参考**（请求体/解析路径），不作为运行期依赖 |
+| `LuanRT/YouTube.js` | 5071 | TypeScript | 2026-07-03 | InnerTube 参考实现（TS），同上作参考 |
 
-下载来源仓库候选：
+**决策**：搜索层**自行实现 InnerTube `WEB_REMIX` 客户端**（Go 标准库 `net/http` + `encoding/json`）。理由：
+1. 只需要 `/youtubei/v1/search` 一个端点，请求体固定，自研代码量小（约 300 行）且零第三方依赖 → 最高性能、最少供应链风险。
+2. 不必受 `raitonoberu/ytmusic`（久未维护）拖累；协议细节对照 `ytmusicapi` 与 `YouTube.js` 实现，保证正确性。
+3. 可完全控制连接复用（`http.Transport` keep-alive）、超时、并发，符合 R11 高性能要求。
 
-| 仓库 | Stars | 语言 | 最近 push | 用途评估 |
+### 3.2 下载
+
+| 仓库 | Stars | 语言 | 最近 push | 评估 |
 | --- | --- | --- | --- | --- |
-| `yt-dlp/yt-dlp` | 180114 | Python | 2026-07-23 | **首选**。作为库（`yt_dlp.YoutubeDL`）内嵌调用，负责按 `videoId` 下载 bestaudio 并用 ffmpeg 转码；社区最活跃，抗 YouTube 变更能力最强 |
-| `pear-devs/pear-desktop`（原 th-ch/youtube-music） | 32798 | TypeScript | 2026-07-24 | 桌面播放器，非服务端方案，不采用 |
+| `yt-dlp/yt-dlp` | 180114 | Python | 2026-07-23 | 事实标准，抗 YouTube 变更能力最强。**以外部可执行文件方式调用**（`os/exec`），Go 服务本体不含 Python 依赖 |
+| `lrstanley/go-ytdlp` | 314 | Go | 2026-07-15 | yt-dlp 的 Go CLI 绑定，**采用**：类型安全、可自动下载 yt-dlp 二进制、活跃维护 |
+| `wader/goutubedl` | 172 | Go | 2026-07-09 | 同类方案，备选 |
+| `kkdai/youtube` | 3915 | Go | 2026-06-02 | 纯 Go 下载器，无外部进程，但对 YouTube 签名/PO Token 变更的跟进速度远不及 yt-dlp，**作为快速路径（fast path）备选** |
 
-**最终选型**：Python 3.13 + FastAPI（HTTP API 层） + `ytmusicapi`（搜索/歌单元数据） + `yt-dlp`（下载） + `ffmpeg`（已装，转码）。依赖装在项目本地 `.venv`（用 `uv`），不污染全局 miniconda 环境。
+**决策**：下载层采用 **yt-dlp 外部进程**（通过 `lrstanley/go-ytdlp` 或直接 `os/exec` 调用，Task 6 定型），ffmpeg 负责转码。理由：可靠性 >> 少一个进程；下载本身是 IO 密集，进程开销占比极低，不影响「高性能」目标（性能瓶颈在网络与转码，不在 Go/进程边界）。
 
-## 4. 架构与接口设计（R2–R10）
+**最终技术栈**：Go 1.26 + 标准库 `net/http`（服务端与 InnerTube 客户端）+ 自研搜索解析 + yt-dlp（外部二进制）+ ffmpeg。零 CGO，单文件可执行产物。
+
+## 4. 架构设计
 
 ```text
-bot ──HTTP──> ytmusic-bridge (FastAPI)
-                 ├─ search  : ytmusicapi.YTMusic().search(q, filter="songs", limit)
-                 │            → 归一化候选列表 + 生成 session_id（含候选快照，带 TTL）
-                 ├─ select  : 按 index 或 display_name 命中候选
-                 ├─ fetch   : yt_dlp 下载 bestaudio → ffmpeg 转 mp3/m4a → 落盘缓存（按 videoId 去重）
-                 └─ deliver : 返回音频二进制（StreamingResponse/FileResponse）+ 元数据响应头
+bot ──HTTP──> ytmusic-bridge (Go, net/http)
+   │
+   ├─ POST /search    → internal/ytmusic  : InnerTube WEB_REMIX /search（连接复用、超时可控）
+   │                    internal/matching : display_name 归一化 + match_score
+   │                    internal/session  : 候选快照（sharded map + TTL），返回 session_id
+   ├─ POST /download  → internal/session  : 按 index / name / video_id 定位候选
+   │                    internal/download : yt-dlp + ffmpeg，singleflight 去重 + 信号量限流 + 磁盘缓存
+   │                    → 直接回二进制流（http.ServeContent）或 JSON + file_url
+   ├─ GET  /file/{token} → 取回缓存音频（token→路径映射，不接受任意路径）
+   └─ GET  /healthz   → 探活
 ```
 
-接口清单（细节以 Task 中实现为准，保持向后一致）：
+目录规划：
 
-1. `GET /healthz` → `{"status":"ok","version":...}`，用于 bot 探活。
+```text
+cmd/ytmusic-bridge/main.go      # 入口：配置加载、路由装配、优雅关闭
+internal/config/config.go       # 环境变量配置（含 MAX_LIMIT 下限保护）
+internal/ytmusic/client.go      # InnerTube 客户端（search）
+internal/ytmusic/parse.go       # 响应解析 → []Track
+internal/matching/matching.go   # 归一化 / tokenize / display_name / match_score
+internal/session/store.go       # 候选快照 + TTL
+internal/download/downloader.go # yt-dlp 调用 + 缓存 + singleflight + 限流
+internal/httpapi/*.go           # handler / 中间件（API Key、日志、恢复）/ 错误模型
+internal/apitypes/types.go      # 请求响应结构体（bot 消费的 JSON 契约）
+```
+
+### 4.1 接口契约
+
+1. `GET /healthz` → `{"status":"ok","version":"0.1.0","ytdlp":"2026.07.04"}`
 2. `POST /search`
-   - 入参：`{"query": str, "limit": int|null}`
-   - 行为：`limit` 缺省用配置 `DEFAULT_LIMIT=10`；`limit` 上限 `MAX_LIMIT=20`（>20 夹到 20）；`limit<1` 报 422。
-   - 出参：`{"session_id": str, "query": str, "limit_used": int, "total": int, "results":[{"index":1,"display_name":"Title - Artist","title":...,"artists":[...],"album":...,"duration":"3:52","duration_seconds":232,"video_id":"...","thumbnail":"..."}]}`
-   - `display_name` 即「歌单上面显示的全名」，是 R8 匹配的唯一权威字符串。
+   - 入参：`{"query":string, "limit":int?, "min_score":float?}`
+   - `limit` 缺省 → `DEFAULT_LIMIT`(10)；`limit > MAX_LIMIT`(20) → 夹到 20；`limit < 1` → 400。
+   - 出参：`{"session_id","query","limit_requested","limit_used","min_score_used","total","truncated","expires_in","results":[{"index","display_name","title","artists":[],"album","duration","duration_seconds","video_id","thumbnail","match_score"}]}`
 3. `POST /download`
-   - 入参：`{"session_id": str|null, "index": int|null, "name": str|null, "video_id": str|null, "format":"mp3"|"m4a"|null}`
-   - 选择优先级：`video_id` > `session_id+index` > `session_id+name`（精确 → 归一化 → 唯一模糊）；歧义（多条同名）返回 409 + 候选清单。
-   - 出参（默认）：音频二进制 + `Content-Disposition: attachment; filename="..."` + 自定义头 `X-Track-Title / X-Track-Artists / X-Track-Video-Id / X-Track-Duration`。
-   - 出参（`?mode=json` 或 `Accept: application/json`）：`{"video_id":...,"file_url":"/file/{token}","filesize":...,"metadata":{...}}`，便于 bot 大文件分步取。
-4. `GET /file/{token}` → 取回上一步生成的文件（token 与 videoId+format 绑定，TTL 可配）。
-5. 认证：可选 `API_KEY`（`X-API-Key` 头）。配置为空则不校验（本机内网默认）。
-6. 配置（`.env` / 环境变量）：`HOST/PORT/API_KEY/DEFAULT_LIMIT/MAX_LIMIT/DOWNLOAD_DIR/AUDIO_FORMAT/AUDIO_BITRATE/CACHE_TTL_SECONDS/SESSION_TTL_SECONDS/PROXY/COOKIES_FILE/MAX_CONCURRENT_DOWNLOADS/MAX_FILESIZE_MB`。
+   - 入参：`{"session_id"?, "index"?, "name"?, "video_id"?, "format"?}`；`?mode=json` 切 JSON 模式。
+   - 选择优先级：`video_id` > `session_id+index` > `session_id+name`（精确→归一化→唯一模糊；多条同名 → 409 带候选清单）。
+   - 默认返回音频二进制 + `Content-Disposition` + `X-Track-*` 头。
+4. `GET /file/{token}` → 音频二进制（支持 Range，便于 bot 断点/分片）。
+5. 鉴权：可选 `X-API-Key`（`API_KEY` 为空则不校验）。
+6. 错误模型：`{"code","message","detail"}`，HTTP 状态码语义化（400/401/404/409/410/413/429/502/504）。
 
-关键设计决策：
+### 4.2 高性能要点（R11）
 
-- **搜索与选择解耦**：`session_id` 保存候选快照，保证 bot 用「序号」选择时不会因为二次搜索排序漂移而选错歌（这是纯 index 方案最大的正确性风险）。
-- **限流上限硬编码 20**：R4/R5 明确最大 20，服务端夹紧，bot 侧可自由传 1..20。
-- **不足即返回**：ytmusicapi 结果不足时不补齐、不报错，`total` 反映真实条数（R6）。
-- **缓存去重**：同一 `video_id+format` 已下载则直接复用文件，避免 bot 重复请求打爆 YouTube。
-- **并发保护**：下载用信号量限流 + 同 key 单飞（single-flight），避免同一首歌并行下载写坏文件。
-- **文件安全**：文件名经白名单清洗，禁止路径穿越；对外只暴露 token→内部路径映射，不接受任意路径参数。
+- 单一 `http.Client` + 调优 `Transport`（`MaxIdleConnsPerHost`、HTTP/2、keep-alive）复用到 InnerTube。
+- session 存储用**分片 map**（按 session_id 哈希分片，降低锁竞争），惰性 + 定时双重 TTL 清理。
+- 下载去重用 `golang.org/x/sync/singleflight`：同一 `videoId+format` 并发请求只跑一次 yt-dlp。
+- 并发上限用带权信号量（`golang.org/x/sync/semaphore`），避免 yt-dlp 进程风暴。
+- 命中缓存时用 `http.ServeContent` 零拷贝式回文件（支持 Range / If-Modified-Since）。
+- 搜索结果打分为纯 CPU 计算，避免正则回溯；`match_score` 对 20 条数据是微秒级。
+- 提供 `go test -bench` 基准 + 并发压测脚本作为 R11 证据。
 
 ## 5. 风险与对策
 
 | 风险 | 影响 | 对策 |
 | --- | --- | --- |
-| YouTube 反爬 / 需要 PO Token / 403 | 下载失败 | yt-dlp 保持可升级；支持 `COOKIES_FILE`、`PROXY`、多 client 回退（`android_music`/`web`/`ios`）；错误信息透传给 bot |
-| 本机无法直连 YouTube | 搜索/下载全挂 | Task 2 实测；失败则用 `PROXY` 环境变量（假设见 §6），并在文档写明 |
-| ytmusicapi `limit` 语义是「至少 N」并含续页 | 返回条数可能 >limit | **Task 2 已实证**：`limit=5` 与 `limit=20` 都返回 20 条（一页固定 20）。服务端必须统一截断到 `limit_used` |
-| **搜索永不返回空**：乱码 query 也返回 20 条完全无关结果 | bot 用户拿到垃圾列表，误以为「搜到了」 | **Task 3 新增相关性评分**：每条结果计算 `match_score`（0~1，query 与 `display_name` 的模糊相似度），响应中返回；提供 `min_score` 请求参数/配置（默认 0 不过滤），由 bot 决定是否过滤。R6「不足即返回」在过滤后才真正可触发 |
-| Python 3.13 与依赖兼容 | 装不上 | 用 `uv` 建独立 venv，锁定版本；失败则降级 3.12（uv 可自动装解释器） |
-| 大文件把 bot 上传限制打爆 | bot 转发失败 | `MAX_FILESIZE_MB` 上限 + JSON 模式返回体积让 bot 预判 |
-| 磁盘无限增长 | 占满磁盘 | `CACHE_TTL_SECONDS` 后台清理 + 缓存目录大小上限 |
-| 版权/滥用 | 合规风险 | README 写明仅供个人学习/私有使用；默认不公开监听 0.0.0.0 之外无鉴权 |
+| InnerTube 响应结构变更 | 搜索解析失败 | 解析走「防御式路径遍历」，字段缺失降级不 panic；单测固化真实响应样本；解析失败返回 502 + 可读原因 |
+| YouTube 反爬 / PO Token / 429 | 下载失败 | yt-dlp 可独立升级；支持 `PROXY` / `COOKIES_FILE`；多 client 回退；错误透传给 bot |
+| 依赖外部 yt-dlp 二进制 | 部署多一步 | `/healthz` 报告 yt-dlp 版本；缺失时启动即给出明确错误与安装指引；文档写清 |
+| 搜索永不为空（已实证） | bot 拿到垃圾列表 | `match_score` + 可选 `min_score`（默认 0 不过滤，决策权归 bot） |
+| 大文件超出 bot 上传限制 | 转发失败 | `MAX_FILESIZE_MB` + JSON 模式先返回体积 |
+| 磁盘无限增长 | 占满磁盘 | TTL + 目录总量上限，后台清理 goroutine |
+| 并发写同一缓存文件 | 文件损坏 | singleflight + 临时文件 + `os.Rename` 原子落盘 |
+| 版权/滥用 | 合规风险 | README 声明仅供个人使用；默认只听 127.0.0.1 |
 
-## 6. 默认假设（无人值守，不向用户提问）
+## 6. 默认假设（无人值守，不提问）
 
-1. 语言/框架：Python + FastAPI + uvicorn（因为 ytmusicapi 与 yt-dlp 都是 Python，最短链路）。
-2. 传输方式：HTTP REST + JSON；音频通过二进制响应返回（「转发给 bot」= bot 从本 API 取回文件后自行转发）。
-3. 默认音频格式：mp3 192k（bot 平台兼容性最好）；可配 `m4a` 直出免转码。
-4. `limit > 20` 采取「夹到 20」而非报错，更符合「起码支持返回那么多」。
-5. 默认监听 `127.0.0.1:8787`，`API_KEY` 默认空（本机使用）；文档说明公网部署必须设 key。
-6. 不做数据库；session/缓存索引用进程内字典 + 磁盘 JSON 索引，重启后缓存文件仍可复用。
-7. 「歌单」理解为「搜索结果候选列表」（用户上下文指的是给 bot 展示的列表），不是 YouTube Music 的 playlist 实体。
-8. 本机已实测可直连 YouTube（Task 2），因此 `PROXY` 默认留空、仅作可选逃生口；不修改系统网络设置。
-9. 不做 bot 本体（Telegram/QQ 等）；只交付 API + 一份 bot 侧调用示例文档/脚本。
-10. 相关性过滤默认关闭（`MIN_SCORE=0.0`），把「要不要过滤、阈值多少」的决策权留给 bot（与用户「设置的部分我决定从 bot 那里搞」一致）；服务端只负责算分并返回。
+1. Go 1.26 + 标准库 `net/http`（不引 gin/echo，减少依赖并保证性能）；仅引入 `golang.org/x/sync`。
+2. 搜索层自研 InnerTube 客户端；不依赖 star 数极低且停更的 Go 第三方库。
+3. 下载层用 yt-dlp 外部二进制（可靠性优先）；若本机无 yt-dlp，由项目脚本下载到 `bin/` 目录（不改系统 PATH）。
+4. 默认音频 mp3 192k；可配 `m4a`/`opus`。
+5. 默认监听 `127.0.0.1:8787`，`API_KEY` 默认空。
+6. 不用数据库；session 内存、缓存索引落盘 JSON。
+7. 「歌单」= 搜索结果候选列表。
+8. 直连可用，`PROXY` 仅作可选逃生口。
+9. 不做 bot 本体，只交付 API + bot 接入示例。
+10. `min_score` 默认 0.0（不过滤），阈值决策权归 bot。
 
 ## 7. 验证方式
 
-- 单元测试（pytest）：limit 夹紧逻辑、不足即返回、index/name 选择与歧义处理、display_name 归一化、文件名清洗、鉴权。
-- 集成测试（真实网络，标记 `-m live`）：`/search` 真实关键词返回 ≥1 条且 ≤limit；`/download` 真实下载一首短音频，校验文件存在、体积 >0、`ffprobe` 可读、时长与元数据一致。
-- 端到端脚本：模拟 bot 流程（search → 选 index → 拿文件；search → 选 display_name → 拿文件）。
-- 类型检查：`mypy`（或 `pyright`）+ `ruff` 静态检查。
-- 手动核验：`curl`/PowerShell `Invoke-RestMethod` 调用，输出粘贴到 tasks.md 作为证据。
+- `go build ./...`、`go vet ./...`、`gofmt -l`（必须无输出）。
+- `go test ./...`：matching/config/session/select/limit 逻辑单测；InnerTube 解析用固化样本；handler 用 `httptest`。
+- `go test -bench`：matching 与 session 的基准数据（R11 证据）。
+- live 测试（`-tags live` 或 `-run TestLive`）：真实搜索 + 真实下载 + ffprobe 校验。
+- 并发压测：同一首歌 N 并发只触发一次下载；`/search` 并发 QPS 与 P99 记录。
+- 端到端脚本：模拟 bot 两条链路（index 选择、全名选择）。
 
 ## 8. 回滚方案
 
-- 全部工作限定在 `C:\Users\Xeltra\Desktop\ytmusic-bridge`，git 初始化后每个 task 一次提交；回滚 = `git revert` / `git reset --hard <sha>` 或直接删除该目录。
-- 依赖只装在项目 `.venv`，不改全局 Python/PATH/系统配置；回滚 = 删除 `.venv`。
+- 全部改动在 `C:\project\test\youtube-music-api`，每个 task 一次 git 提交；回滚 = `git reset --hard <sha>` 或删目录。
+- Go 依赖记录在 `go.mod`/`go.sum`，不改全局环境（无 CGO、不装系统包）。
+- yt-dlp 若由脚本下载，落在项目 `bin/`，删除即回滚。
 - 不触碰生产配置、密钥、系统网络设置。

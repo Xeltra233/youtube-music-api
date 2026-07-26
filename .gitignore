@@ -1,14 +1,10 @@
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 .env
 downloads/
 cache/
-*.log
-dist/
-build/
-*.egg-info/
+bin/
 tmp/
+dist/
+*.log
+*.exe
+# 只忽略仓库根目录下的构建产物，不要误伤 cmd/ytmusic-bridge/ 源码目录
+/ytmusic-bridge
