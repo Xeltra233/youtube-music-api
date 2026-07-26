@@ -245,8 +245,7 @@ G0?G2 **??**???????????????? Task G3?InnerTube ???????
 **???**?Task G3 InnerTube ??????`internal/ytmusic`??
 
 ---
-## [ ] Task G3：InnerTube 搜索客户端（internal/ytmusic）
-
+## [x] Task G3：InnerTube 搜索客户端（internal/ytmusic）
 目标：实现 `WEB_REMIX` 客户端 POST `/youtubei/v1/search`（`filter=songs`），复用 `http.Client`（keep-alive、超时、可选 proxy）；防御式解析 `musicResponsiveListItemRenderer` → `Track{VideoID,Title,Artists,Album,Duration,DurationSeconds,Thumbnail}`；上游一页 20 条，返回原始列表。
 
 独立验证：
@@ -255,6 +254,33 @@ G0?G2 **??**???????????????? Task G3?InnerTube ???????
 - 中文/日文 query live 验证。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新增 `internal/ytmusic` 包：
+  - `types.go`：`Track{VideoID,Title,Artists,Album,Duration,DurationSeconds,Thumbnail}`
+  - `client.go`：`WEB_REMIX` 搜索客户端；`http.Transport` keep-alive + HTTP/2；可选 `Proxy`；默认超时 15s；`clientVersion = 1.YYYYMMDD.01.00`；songs filter `EgWKAQIIAWoMEA4QChADEAQQCRAF`
+  - `parse.go`：防御式遍历 `musicResponsiveListItemRenderer`；videoId 多路径回退；title/artists/album/duration/thumbnail 缺失不 panic
+  - `client_test.go`：离线 fixture 解析、残缺 JSON、httptest 请求体/头校验、live 英/中/日搜索
+  - `testdata/search_songs_lemon.json`：真实上游响应（约 680KB / 20 条）
+- 仅返回原始 songs 列表；limit / match_score / session 留给 G4/G5。
+
+**验证结果**
+- `gofmt -l .` 无输出；`go build ./...` / `go vet ./...` 通过。
+- `go test ./... -count=1` 通过：`config` / `matching` / `ytmusic`。
+- 离线：fixture 解析 ≥10 条；首条 `Lemon` / `Kenshi Yonezu` / `4:17` / `257s` / 有 thumbnail。
+- live：
+  - `lemon kenshi yonezu` → 首条 `3NNhrqHZqlI | Lemon | [Kenshi Yonezu] | 4:17`（≥10 条）
+  - `晴天 周杰伦` → 首条 `SJKoWAd5ySo | 晴天 | [周杰倫]`
+  - `レモン 米津玄師` → 首条 `3NNhrqHZqlI | Lemon | [Kenshi Yonezu]`
+- 残缺字段 / 无 videoId 条目：跳过且不 panic。
+
+**剩余风险**
+- InnerTube 响应结构可能变更；已用防御式路径 + fixture 单测兜底，但 live 仍可能偶发 429/地区差异。
+- `hl/gl` 当前默认 `en/US`；中文歌手名在 en 响应里常显示繁体（如「周杰倫」），后续若 bot 需要可配置语言。
+- 未做 limit/min_score（G4）与 session（G5）。
+- live 测试默认联网执行；可用 `YTM_SKIP_LIVE=1` 跳过。
+
+**下一步**：Task G4 搜索服务层（limit 夹紧 / 截断 / 打分 / min_score 过滤 / R6）。
 
 ---
 
