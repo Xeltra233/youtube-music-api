@@ -41,7 +41,7 @@
 
 ---
 
-## [ ] Task 2：网络与外部依赖实测（YouTube Music 搜索 + 单曲下载可行性）
+## [x] Task 2：网络与外部依赖实测（YouTube Music 搜索 + 单曲下载可行性）
 
 目标：写一次性探针脚本（`scripts/probe.py`），验证 `ytmusicapi.search` 与 `yt_dlp` 下载在本机网络可用；记录是否需要 `PROXY`/`COOKIES_FILE`，把结论写回 `goal-1/plan.md` §2/§6。
 
@@ -51,6 +51,34 @@
 - 若失败，记录准确错误码与已尝试的 client/代理组合。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新增 `scripts/probe.py`：搜索 + 下载 + ffprobe 三段式探针，支持 `--query` / `--proxy`，退出码区分失败环节。
+- 新增 `scripts/probe_semantics.py`：验证 limit 语义、中文/日文查询、无结果场景（避免 PowerShell 管道编码干扰）。
+- 把实测结论写回 `plan.md` §2（网络事实）、§5（风险表）、§6（假设 8/10）。
+
+**验证结果（实测输出）**
+- `probe.py`（EXIT=0）：
+  - `[search] query='lemon kenshi yonezu' proxy=None took=1.18s count=20`，首条 `3NNhrqHZqlI | Lemon | Kenshi Yonezu | album=Lemon | dur=4:17`
+  - `[download] videoId=3NNhrqHZqlI took=5.59s title='Lemon' duration=256s files=['3NNhrqHZqlI.mp3']`，`size=6148269 bytes`
+  - `[ffprobe] {"format_name":"mp3","duration":"256.106667","size":"6148269","bit_rate":"192053"}`
+  - 结论：**无需 proxy、无需 cookies，直连可用**。
+- `probe_semantics.py`（EXIT=0）：
+  - `'周杰伦 晴天'` → 20 条，首条 `SJKoWAd5ySo | 晴天 | 周杰倫 | 4:30`（中文 OK）
+  - `'米津玄師 レモン'` → 20 条，首条 `3NNhrqHZqlI | Lemon | Kenshi Yonezu`（日文 OK）
+  - `'lemon' limit=5` → **raw_count=20**；`'lemon' limit=20` → raw_count=20 → **证实 limit 是「至少 N」语义，必须服务端截断**
+  - `'zzqqxxwweeyy nonexistent song 9182'` → **raw_count=20**（全是无关结果）→ **证实搜索永不返回空**
+
+**关键发现（影响设计）**
+1. `limit` 不是上限而是下限，一页固定 20 条 → Task 3 必须硬截断到 `limit_used`。
+2. 搜索永不返回空，乱码 query 也给 20 条垃圾 → R6「搜不到那么多就返回多少」在原始 API 下永远触发不到。故 Task 3 增加 `match_score`（query vs display_name 模糊相似度）与可选 `min_score` 过滤，把阈值决策权交给 bot；过滤后 R6 才真正有意义。
+3. yt-dlp 需显式 `ffmpeg_location`（本机 `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin`）。
+
+**剩余风险**
+- 单次探针成功不代表长期稳定：YouTube 可能随时要求 PO Token / 触发 429。已保留 `PROXY` / `COOKIES_FILE` 逃生口，Task 6 需实现多 client 回退与可读错误透传。
+- `match_score` 算法需在 Task 3 用真实数据校准阈值，避免误杀（例如「晴天」vs「晴天 (Live)」）。
+
+**下一步**：Task 3 配置模块 + 搜索服务层（含 limit 夹紧、截断、display_name、match_score）。
 
 ---
 

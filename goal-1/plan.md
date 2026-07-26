@@ -27,7 +27,12 @@
   - `docker` 存在（本项目不强依赖）
   - `yt-dlp` **未安装**（需要作为 Python 依赖安装到项目虚拟环境，而不是全局改环境）
 - 项目根目录：`C:\Users\Xeltra\Desktop\ytmusic-bridge`（本 goal 新建）。
-- 网络：GitHub API 可直连（已成功调用 `api.github.com`）。YouTube 直连能力在 Task 2 中实测；若不可直连，走 §6 代理假设。
+- 网络（Task 2 实测结论，2026-07-26）：
+  - GitHub API 可直连（已成功调用 `api.github.com`）。
+  - **YouTube Music 搜索可直连**：`YTMusic().search("lemon kenshi yonezu", filter="songs", limit=20)` 1.18s 返回 20 条，**无需 proxy / 无需 cookies**。
+  - **YouTube 音频下载可直连**：`yt_dlp` 下载 `3NNhrqHZqlI` 耗时 5.59s，转码 mp3 成功；`ffprobe` → `{"format_name":"mp3","duration":"256.106667","size":"6148269","bit_rate":"192053"}`。
+  - 中文/日文查询正常：`"周杰伦 晴天"` → `SJKoWAd5ySo | 晴天 | 周杰倫 | 4:30`；`"米津玄師 レモン"` → `3NNhrqHZqlI | Lemon | Kenshi Yonezu`。
+  - `ffmpeg_location` 需显式传入 yt-dlp（本机 ffmpeg 在 `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin`，虽在 PATH 但显式指定更稳）。
 
 ## 3. GitHub 选型调研（R1，数据来自 api.github.com，2026-07-26）
 
@@ -94,7 +99,8 @@ bot ──HTTP──> ytmusic-bridge (FastAPI)
 | --- | --- | --- |
 | YouTube 反爬 / 需要 PO Token / 403 | 下载失败 | yt-dlp 保持可升级；支持 `COOKIES_FILE`、`PROXY`、多 client 回退（`android_music`/`web`/`ios`）；错误信息透传给 bot |
 | 本机无法直连 YouTube | 搜索/下载全挂 | Task 2 实测；失败则用 `PROXY` 环境变量（假设见 §6），并在文档写明 |
-| ytmusicapi `limit` 语义是「至少 N」并含续页 | 返回条数可能 >limit | 服务端统一截断到 `limit_used` |
+| ytmusicapi `limit` 语义是「至少 N」并含续页 | 返回条数可能 >limit | **Task 2 已实证**：`limit=5` 与 `limit=20` 都返回 20 条（一页固定 20）。服务端必须统一截断到 `limit_used` |
+| **搜索永不返回空**：乱码 query 也返回 20 条完全无关结果 | bot 用户拿到垃圾列表，误以为「搜到了」 | **Task 3 新增相关性评分**：每条结果计算 `match_score`（0~1，query 与 `display_name` 的模糊相似度），响应中返回；提供 `min_score` 请求参数/配置（默认 0 不过滤），由 bot 决定是否过滤。R6「不足即返回」在过滤后才真正可触发 |
 | Python 3.13 与依赖兼容 | 装不上 | 用 `uv` 建独立 venv，锁定版本；失败则降级 3.12（uv 可自动装解释器） |
 | 大文件把 bot 上传限制打爆 | bot 转发失败 | `MAX_FILESIZE_MB` 上限 + JSON 模式返回体积让 bot 预判 |
 | 磁盘无限增长 | 占满磁盘 | `CACHE_TTL_SECONDS` 后台清理 + 缓存目录大小上限 |
@@ -109,8 +115,9 @@ bot ──HTTP──> ytmusic-bridge (FastAPI)
 5. 默认监听 `127.0.0.1:8787`，`API_KEY` 默认空（本机使用）；文档说明公网部署必须设 key。
 6. 不做数据库；session/缓存索引用进程内字典 + 磁盘 JSON 索引，重启后缓存文件仍可复用。
 7. 「歌单」理解为「搜索结果候选列表」（用户上下文指的是给 bot 展示的列表），不是 YouTube Music 的 playlist 实体。
-8. 若本机无法直连 YouTube，允许通过 `PROXY` 环境变量走用户已有代理；不修改系统网络设置。
+8. 本机已实测可直连 YouTube（Task 2），因此 `PROXY` 默认留空、仅作可选逃生口；不修改系统网络设置。
 9. 不做 bot 本体（Telegram/QQ 等）；只交付 API + 一份 bot 侧调用示例文档/脚本。
+10. 相关性过滤默认关闭（`MIN_SCORE=0.0`），把「要不要过滤、阈值多少」的决策权留给 bot（与用户「设置的部分我决定从 bot 那里搞」一致）；服务端只负责算分并返回。
 
 ## 7. 验证方式
 
