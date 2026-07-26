@@ -83,7 +83,7 @@ go test -bench=. ./...
 - [x] bot 接入文档（`docs/BOT-INTEGRATION.md`）
 - [x] 匹配层 `internal/matching`（`display_name` / `match_score`）
 - [x] InnerTube 搜索客户端 `internal/ytmusic`
-- [ ] 搜索服务层 `internal/search`
+- [x] 搜索服务层 `internal/search`
 - [ ] 会话与选歌层 `internal/session`
 - [ ] 下载层 `internal/download`（yt-dlp + singleflight + 限流）
 - [ ] HTTP API 层 `internal/httpapi`

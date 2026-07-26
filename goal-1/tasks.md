@@ -284,14 +284,39 @@ G0?G2 **??**???????????????? Task G3?InnerTube ???????
 
 ---
 
-## [ ] Task G4：搜索服务层（limit 夹紧 / 截断 / 打分 / min_score 过滤 / R6 不足即返回）
-
+## [x] Task G4：搜索服务层（limit 夹紧 / 截断 / 打分 / min_score 过滤 / R6 不足即返回）
 目标：`internal/search`：调 ytmusic → 生成 `display_name` 与 `match_score` → 按 `min_score` 过滤 → 截断到 `limit_used` → 填 `index`（1-based）、`total`、`truncated`。
 
 独立验证：
 - 单测（stub 上游）：limit 缺省=10；limit=25→20；limit=0→错误；上游 20 条 + limit=10 → total=10 且 truncated=true；上游 3 条 + limit=10 → total=3 且 truncated=false（R6）；`min_score=0.9` 过滤后条数减少且 index 重新连续。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新增 `internal/search`：
+  - `Upstream` 接口（`*ytmusic.Client` 可直接注入；测试用 stub）
+  - `Service.Search` 管线：trim query → resolve limit/min_score → 上游搜索 → `BuildDisplayName` + `MatchScore` → min_score 过滤 → 按分数稳定降序 → 截断 → 1-based index
+  - `Request.Limit` / `MinScore` 用指针区分「未传」与「显式 0」：未传 limit→DefaultLimit；显式 limit<=0→`ErrInvalidLimit`；limit>MaxLimit→夹到 MaxLimit；min_score 走 `config.ResolveMinScore`
+  - `Response` 含 `Query/LimitRequested/LimitUsed/MinScoreUsed/Total/Truncated/Results`（不含 session_id，留给 G5）
+- `service_test.go`：12 个用例覆盖 G4 验收点与排序/空 query/上游错误/nil artists
+
+**验证结果**
+- `gofmt -l .` 无输出；`go build ./...` / `go vet ./...` 通过
+- `go test ./internal/search -count=1 -v` 12/12 PASS：
+  - 缺省 limit=10，20→10 且 `truncated=true`
+  - limit=25→`limit_requested=25`/`limit_used=20`
+  - limit=0/-3 → `ErrInvalidLimit`
+  - 上游 3 条 + limit=10 → total=3 / `truncated=false`（R6）
+  - `min_score=0.9` 过滤后条数减少、index 从 1 连续、首条含 Lemon
+  - 分数降序稳定排序
+- `go test ./... -count=1` 全绿（含 ytmusic live）
+
+**剩余风险**
+- 本层尚未挂 session（G5）与 HTTP（G7）；`session_id`/`expires_in` 不在本包
+- 打分对象是 `display_name`，依赖 G3 解析质量；简繁/罗马音边界仍由 matching 层承担
+- 上游永远返回约 20 条时，`min_score=0` 的 truncated 语义正确；若未来上游分页，截断判断仍基于「过滤后条数 vs limit_used」
+
+**下一步**：Task G5 会话快照层 + 选择层（`internal/session`）
 
 ---
 
