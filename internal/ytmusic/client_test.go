@@ -312,3 +312,77 @@ func readFixture(t *testing.T, name string) []byte {
 	}
 	return body
 }
+
+func TestParseSearchResponseNonObjectRoot(t *testing.T) {
+	cases := []string{`[]`, `null`, `123`, `"str"`, `true`}
+	for _, raw := range cases {
+		tracks, err := ParseSearchResponse([]byte(raw))
+		if err != nil {
+			// null/number/bool/string are valid JSON; walk should yield empty without error
+			// only invalid JSON errors. These are valid.
+			t.Fatalf("raw=%s err=%v", raw, err)
+		}
+		if len(tracks) != 0 {
+			t.Fatalf("raw=%s tracks=%d", raw, len(tracks))
+		}
+	}
+}
+
+func TestParseSearchResponseSkipsNonSongRenderers(t *testing.T) {
+	body := []byte(`{"a":[{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"ok1"},"flexColumns":[
+		{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Title"}]}}},
+		{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Artist"},{"text":" ? "},{"text":"Album"},{"text":" ? "},{"text":"2:00"}]}}}
+	]}},{"somethingElse":{}},{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":""}}}]}`)
+	tracks, err := ParseSearchResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 1 || tracks[0].VideoID != "ok1" {
+		t.Fatalf("%+v", tracks)
+	}
+	if tracks[0].DurationSeconds != 120 {
+		t.Fatalf("duration=%d", tracks[0].DurationSeconds)
+	}
+}
+
+func TestSearchContextCancel(t *testing.T) {
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	httpClient := srv.Client()
+	httpClient.Timeout = 0
+	client, err := New(Options{BaseURL: srv.URL, HTTPClient: httpClient, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.Search(ctx, "x")
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not see request")
+	}
+	cancel()
+	select {
+	case err = <-errCh:
+		if err == nil {
+			t.Fatal("expected cancel error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Search did not return after cancel")
+	}
+}

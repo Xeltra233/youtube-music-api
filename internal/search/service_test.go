@@ -24,9 +24,14 @@ func (s *stubUpstream) Search(_ context.Context, query string) ([]ytmusic.Track,
 	if s.err != nil {
 		return nil, s.err
 	}
-	// 返回拷贝，模拟真实上游。
+	// ????? Artists?????????????????
 	out := make([]ytmusic.Track, len(s.tracks))
-	copy(out, s.tracks)
+	for i, tr := range s.tracks {
+		out[i] = tr
+		if tr.Artists != nil {
+			out[i].Artists = append([]string(nil), tr.Artists...)
+		}
+	}
 	return out, nil
 }
 
@@ -306,5 +311,53 @@ func TestSearchQueryTrimmed(t *testing.T) {
 	}
 	if up.lastQ != "Song 01" {
 		t.Fatalf("upstream query=%q", up.lastQ)
+	}
+}
+
+func TestSearchResultsDefensiveCopy(t *testing.T) {
+	artists := []string{"Orig"}
+	up := &stubUpstream{tracks: []ytmusic.Track{track("v", "T", artists)}}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "T"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ??????????????
+	resp.Results[0].Artists[0] = "MUT"
+	resp2, err := svc.Search(context.Background(), Request{Query: "T"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.Results[0].Artists[0] != "Orig" {
+		t.Fatalf("artists leaked via response: %v", resp2.Results[0].Artists)
+	}
+	// ???????????????????????
+	artists[0] = "MUT2"
+	if resp2.Results[0].Artists[0] != "Orig" {
+		t.Fatalf("artists leaked via caller slice: %v", resp2.Results[0].Artists)
+	}
+}
+
+func TestSearchStableOrderOnEqualScores(t *testing.T) {
+	// identical titles => equal scores; stable sort keeps upstream order.
+	tracks := []ytmusic.Track{
+		track("a", "Same", []string{"X"}),
+		track("b", "Same", []string{"X"}),
+		track("c", "Same", []string{"X"}),
+	}
+	svc, _ := New(&stubUpstream{tracks: tracks}, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Same - X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("n=%d", len(resp.Results))
+	}
+	got := []string{resp.Results[0].VideoID, resp.Results[1].VideoID, resp.Results[2].VideoID}
+	want := []string{"a", "b", "c"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order=%v want %v", got, want)
+		}
 	}
 }

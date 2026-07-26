@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -299,5 +300,80 @@ func TestSelectVideoIDTrimSpace(t *testing.T) {
 	}
 	if sel.Item.VideoID != "abc" {
 		t.Fatalf("got %q", sel.Item.VideoID)
+	}
+}
+
+func TestSelectIndexZeroFallsBackToName(t *testing.T) {
+	store := NewStore(Options{TTL: time.Minute})
+	id := putSample(t, store, lemonItems())
+	sel, err := store.Select(SelectRequest{SessionID: id, Index: 0, Name: "?? - ???"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Item.VideoID != "qt1" {
+		t.Fatalf("%+v", sel.Item)
+	}
+}
+
+func TestSelectFuzzyAmbiguousEqualTopScore(t *testing.T) {
+	items := []search.Item{
+		{Index: 1, DisplayName: "Alpha Song - Z", Title: "Alpha Song", Artists: []string{"Z"}, VideoID: "1"},
+		{Index: 2, DisplayName: "Alpha Song - Y", Title: "Alpha Song", Artists: []string{"Y"}, VideoID: "2"},
+		{Index: 3, DisplayName: "Beta - Q", Title: "Beta", Artists: []string{"Q"}, VideoID: "3"},
+	}
+	store := NewStore(Options{TTL: time.Minute})
+	id := putSample(t, store, items)
+	// "Alpha Song" is a substring of both display names with very similar scores; should be ambiguous or unique.
+	_, err := store.Select(SelectRequest{SessionID: id, Name: "Alpha Song"})
+	// Either unique best or ambiguous is acceptable only if deterministic; with symmetric names expect ambiguous.
+	if err == nil {
+		// If one wins uniquely due to targetCoverage, that's ok as long as stable; record which.
+		// Re-run thrice for stability.
+		var first string
+		for i := 0; i < 3; i++ {
+			sel, err2 := store.Select(SelectRequest{SessionID: id, Name: "Alpha Song"})
+			if err2 != nil {
+				t.Fatalf("unstable err on retry: %v", err2)
+			}
+			if i == 0 {
+				first = sel.Item.VideoID
+			} else if sel.Item.VideoID != first {
+				t.Fatalf("unstable selection %s vs %s", first, sel.Item.VideoID)
+			}
+		}
+		return
+	}
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSelectConcurrentWithCleanup(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC))
+	store := NewStore(Options{TTL: time.Minute, Now: clock.Now, ShardCount: 8})
+	ids := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		ids = append(ids, putSample(t, store, lemonItems()))
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				id := ids[(i+j)%len(ids)]
+				_, _ = store.Select(SelectRequest{SessionID: id, Index: 1})
+				if j == 25 {
+					store.Cleanup()
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	// advance and cleanup
+	clock.Advance(2 * time.Minute)
+	_ = store.Cleanup()
+	if store.Len() != 0 {
+		t.Fatalf("len=%d", store.Len())
 	}
 }

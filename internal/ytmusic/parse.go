@@ -1,6 +1,7 @@
 package ytmusic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -347,5 +348,5 @@ func isAllDigits(s string) bool {
 }
 
 func bytesTrimSpace(b []byte) []byte {
-	return []byte(strings.TrimSpace(string(b)))
+	return bytes.TrimSpace(b)
 }

@@ -309,3 +309,29 @@ func BenchmarkStorePutGetParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestExpiresInSecondsSubSecond(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	snap := Snapshot{ExpiresAt: now.Add(500 * time.Millisecond)}
+	if got := snap.ExpiresInSeconds(now); got != 1 {
+		t.Fatalf("got %d want 1", got)
+	}
+	if got := snap.ExpiresInSeconds(now.Add(500 * time.Millisecond)); got != 0 {
+		t.Fatalf("boundary got %d", got)
+	}
+}
+
+func TestPutNilResults(t *testing.T) {
+	store := NewStore(Options{TTL: time.Minute})
+	id, _, err := store.Put("q", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Results == nil || len(snap.Results) != 0 {
+		t.Fatalf("%+v", snap.Results)
+	}
+}
