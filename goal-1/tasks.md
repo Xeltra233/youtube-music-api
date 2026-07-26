@@ -83,7 +83,7 @@
 
 ---
 
-## [ ] Task G2：匹配层（internal/matching）display_name + 归一化 + match_score
+## [x] Task G2：匹配层（internal/matching）display_name + 归一化 + match_score
 
 目标：实现 `Normalize`（NFKC + casefold + 去标点 + 压空白）、`Tokenize`（拉丁按词、CJK 逐字）、`BuildDisplayName(title, artists)` → `"标题 - 歌手1, 歌手2"`、`MatchScore(query, displayName)` → 0~1（整串相似度 / 包含 / 词元覆盖率取最大）。
 
@@ -92,6 +92,66 @@
 - `go test -bench=. ./internal/matching` 给出 ns/op（R11 证据）。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新增 `internal/matching/matching.go`（约 300 行）：
+  - `BuildDisplayName(title, artists)` → `"标题 - 歌手1, 歌手2"`；无歌手时不带 `" - "`；过滤空歌手并 trim。此格式是 R8「按全名选歌」的契约，已写入 `docs/BOT-INTEGRATION.md §8` 承诺不变。
+  - `Normalize` → NFKC（全角→半角）→ 小写 → 标点/符号/emoji 转空格 → 压缩空白；纯标点返回 `""`。
+  - `Tokenize` → 拉丁/数字按空白分词，**CJK/假名/韩文逐字切分**（不逐字切的话「周杰倫晴天」会变成一个巨型词元，部分匹配彻底失效）。
+  - `MatchScore(query, target)` → 取三策略最大值：① 整串 Levenshtein 相似度；② 子串包含（`0.75 + 0.25*len(q)/len(t)`）；③ 词元覆盖率 `tokenScore`。
+  - `levenshtein` 用双行滚动数组：O(len(a)·len(b)) 时间、O(min(len)) 空间、循环内零分配。
+- 新增 `internal/matching/matching_test.go`：**24 个测试函数 / 61 个子测试 + 7 个 benchmark**。
+- `go get golang.org/x/text` → `go.mod` 新增 `golang.org/x/text v0.40.0`（唯一第三方依赖，只用其 `unicode/norm` 做 NFKC；`go mod tidy` 后已是直接依赖，非 indirect）。
+- **本轮发现并修复 3 个真实缺陷（不是改测试目标，是改实现）**：
+  1. **错拼 query 与乱码 query 无法区分（严重，直接违背 R3「近似名字」）**：初版 `tokenScore` 只做精确词元匹配，`"lemmon"` 对 `"Lemon - Kenshi Yonezu"` 只剩整串 Levenshtein 的 **0.2632**，而乱码 query 是 0.2059 —— 两者几乎重合，`min_score` 无论取什么值都无法同时「留下错拼、滤掉乱码」。修复：`tokenScore` 改为**两轮匹配**，第一轮精确、第二轮对长度 ≥4 的未命中词元做相似度 ≥0.7 的错拼匹配，命中权重取**实际相似度**而非 1.0（保证精确命中始终排在错拼命中之前）。实测 `"lemmon"` 0.2632 → **0.7500**，乱码仍 0.2059，区分度打开。
+  2. **模糊匹配会抢走精确命中的词元**：若单轮遍历，`"yonezu yonezuu"` 里 `yonezuu` 可能先模糊吃掉唯一的 target 词元 `yonezu`，导致后面本该精确命中的 `yonezu` 落空。修复：拆成两轮（精确优先），并新增 `TestMatchScoreFuzzyDoesNotStealExactToken`。
+  3. **超长 query 是 DoS 向量**：Levenshtein 是 O(n·m)，而 `/search` 的 query 完全由 bot 用户输入。修复：新增 `maxScoreRunes = 256`，打分前按字符数截断（`truncateRunes`，不切坏多字节字符）；`nq == nt` 的相等判断放在截断**之前**，保证「完全相同 = 1.0」契约不被截断破坏。实测 20 万字符 query 打分耗时 **1.17ms**（未截断则不可用）。
+- **性能优化（数学无损）**：模糊匹配内层加 `similarityUpperBound` 剪枝 —— 长度差是 Levenshtein 距离的下界，故相似度上界 = `min(la,lb)/max(la,lb)`，上界够不到阈值或当前最优时直接跳过矩阵计算。`BenchmarkMatchScoreWorstCase` 15540 ns → **12716 ns（-18%）**、8296 B/117 allocs → **5992 B/73 allocs**，且**分值表逐条比对完全一致**（剪枝未改变任何行为）。另加 `TestSimilarityUpperBoundIsValid` 用 17×17 组合暴力验证上界成立。
+- 顺带修 `gofmt`：新写的测试文件有对齐问题，`gofmt -w` 已修正。
+
+**验证结果（实测）**
+- `gofmt -l .` → 无输出；`go build ./...` → 无输出；`go vet ./...` → 无输出。
+- `go test ./... -count=1` → `ok internal/config` + `ok internal/matching`，全绿。
+- `go test ./... -race -count=1` → 全绿（matching 1.105s）。
+- **实测分值表（target = `"Lemon - Kenshi Yonezu"`）——`min_score` 阈值取值依据**：
+
+  | query | 分值 | 类别 |
+  | --- | --- | --- |
+  | `Lemon - Kenshi Yonezu` | **1.0000** | 全名精确 |
+  | `lemon kenshi yonezu` | **1.0000** | 归一化后等价 |
+  | `kenshi yonezu lemon` | **1.0000** | 词序颠倒 |
+  | `kenshi yonezu` | 0.9500 | 只打歌手 |
+  | `lemon` / `yonezu` | 0.9000 | 只打歌名 / 只打姓 |
+  | `kenshi yonzu` | 0.8708 | 歌手错拼 1 字母 |
+  | `lemmon` | 0.7500 | 歌名错拼 1 字母 |
+  | `lemon tree` | 0.4500 | 同名不同歌（不同曲） |
+  | `zzqqxxwweeyy nonexistent song 9182` | 0.2059 | 乱码 |
+  | `bohemian rhapsody` | 0.1579 | 完全无关 |
+
+- **CJK 与简繁实测**：`"晴天"` vs `"晴天 - 周杰倫"` = 0.9100；`"周杰倫 晴天"` = **1.0000**；`"晴天 周杰伦"`（简体）= 0.8333；`"周杰伦 晴天"` = 0.7760；`"邓紫棋 泡沫"` vs `"泡沫 - 鄧紫棋"` = 0.7760；`"レモン"` vs `"レモン - 米津玄師"` = 0.9143。**简繁差异最低 0.7760**，仍远高于乱码。
+- **结论：`min_score` 推荐默认 `0.35`**（与 `docs/BOT-INTEGRATION.md` 第 254 行给 bot 的建议值一致，本轮实测确认合理）。理由：真实命中（含错拼、简繁、词序颠倒）最低 0.6067（`"周杰伦"` 只打简体歌手名），乱码最高 0.2059 —— **0.35 落在两者之间且两侧各有 ~0.15 余量**。服务端默认仍为 `0.0`（不过滤），决策权归 bot（R5）。
+- **基准数据（R11 证据，i7-14650HX / 24 线程 / windows-amd64）**：
+
+  | Benchmark | ns/op | B/op | allocs/op |
+  | --- | --- | --- | --- |
+  | `MatchScoreLatin` | 314.0 | 48 | 2 |
+  | `MatchScoreCJK` | 1374 | 592 | 18 |
+  | `MatchScoreWorstCase` | 13187 | 5992 | 73 |
+  | **`ScoreFullPage`（一页 20 条，= 一次 `/search` 的打分总开销）** | **65244（≈65µs）** | 40640 | 480 |
+  | `Normalize` | 363.7 | 48 | 1 |
+  | `TokenizeCJK` | 200.4 | 320 | 10 |
+  | `BuildDisplayName` | 62.54 | 80 | 2 |
+
+  **关键结论**：一次 `/search` 的全部打分开销约 **65µs**，而实测上游 InnerTube 网络往返是 **1.18s** —— 打分占单次请求耗时的 **0.0055%**，匹配层不是性能瓶颈，R11 在本层已达标。
+- 测试覆盖清单：`BuildDisplayName`(9) / `Normalize`(16) / `Tokenize`(11) / 精确=1.0(5) / 空=0(6) / 值域 [0,1](20 组合) / 部分 query 高分(8) / 无关低分(4) / 排序(1) / 错字容忍(3) / **错拼落在完整 display_name(4)** / **模糊不过宽(3)** / **精确优于错拼(1)** / **模糊不抢精确词元(1)** / **单汉字不模糊(1)** / 重复词元(1) / 简繁(5) / **上界有效性(289 组合)** / **超长输入有界(3)** / **truncateRunes(7)** / 阈值分值表(1)。
+
+**剩余风险**
+- **简繁转换未做**：`"周杰伦"`（简）对 `"周杰倫"`（繁）靠逐字 token 部分命中拿到 0.6067，能用但不理想。若后续发现中文用户体验不好，可引入简繁映射表（`golang.org/x/text` 不含此功能，需额外依赖或自带表）。当前不做，避免为假设需求增加依赖。
+- **罗马字/拼音查询未支持**：`"kenshi yonezu"` 查日文原名 `"米津玄師"` 会低分。实际影响小 —— YouTube Music 上游搜索本身接受罗马字，返回的 `display_name` 通常已含罗马字，打分对象是 `display_name` 而非原始日文。G3 拿到真实响应后需复查此假设。
+- `fuzzyTokenMinLen = 4` 与 `fuzzyTokenThreshold = 0.7` 是基于上述实测表调出的经验值，非配置项。若 G9 端到端联调发现误命中，再考虑提升为配置。
+- 打分对象最终是 `display_name`，其质量取决于 G3 的解析正确性（歌手字段是否完整）；G3 完成后应回归本层的真实数据表现。
+
+**下一步**：Task G2.5 大型全面检查-debug 循环 #1（覆盖 G0–G2）。
 
 ---
 
