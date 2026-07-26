@@ -6,7 +6,7 @@
 
 ---
 
-## [ ] Task 1：项目骨架 + 独立虚拟环境 + 依赖安装
+## [x] Task 1：项目骨架 + 独立虚拟环境 + 依赖安装
 
 目标：在 `C:\Users\Xeltra\Desktop\ytmusic-bridge` 建立 Python 项目骨架，用 `uv` 创建 `.venv`，安装 `fastapi/uvicorn/ytmusicapi/yt-dlp/pydantic-settings/pytest/httpx/ruff/mypy`，`git init` + 首次提交。
 
@@ -16,6 +16,28 @@
 - 未修改全局 Python 环境（`pip list --user` 无新增，miniconda 不变）。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新建项目根 `C:\Users\Xeltra\Desktop\ytmusic-bridge`，创建 `pyproject.toml`（hatchling 构建、ruff/mypy/pytest 配置、`live` 测试标记）、`.gitignore`、`README.md`（占位，Task 10 补全）、`app/__init__.py`（`__version__ = "0.1.0"`）。
+- `uv venv --python 3.13` 建独立 `.venv`；`uv pip install -e ".[dev]"` 安装运行期与开发期依赖。
+- `git init` + 首次提交 `62cfae0`。
+
+**验证结果（实测输出）**
+- 依赖导入：`.venv\Scripts\python.exe -c "import ..."` →
+  `python 3.13.13` / `exe C:\Users\Xeltra\Desktop\ytmusic-bridge\.venv\Scripts\python.exe` /
+  `fastapi 0.140.0` / `ytmusicapi 1.12.1` / `yt_dlp 2026.07.04` / `pydantic 2.13.4` /
+  `uvicorn 0.51.0` / `pytest 9.1.1` / `httpx 0.28.1`。
+- git：`git log --oneline` → `62cfae0 Task 1: 项目骨架 + 独立虚拟环境 + 依赖安装`；
+  `git ls-files` → `.gitignore / README.md / app/__init__.py / goal-1/*.md / pyproject.toml`（`.venv` 未入库，符合预期）。
+- 全局环境未污染：`miniconda3\python.exe -c "importlib.util.find_spec(...)"` → `ytmusicapi global-absent`、`yt_dlp global-absent`（`fastapi GLOBAL-PRESENT` 是本机原有，非本次安装）。
+- 首次 `uv pip install` 曾因 `README.md` 缺失被 hatchling 拒绝（`OSError: Readme file does not exist`），补建 README 后安装成功，`EXIT=0`。
+
+**剩余风险**
+- `yt_dlp 2026.07.04` 对 YouTube 反爬的实际可用性尚未验证 → Task 2 实测。
+- 本机能否直连 YouTube 未知 → Task 2 实测，必要时启用 `PROXY`。
+- Git 报 LF→CRLF 换行警告（无害），未设置 `core.autocrlf`，跨平台协作时可能产生 diff 噪音；本项目仅本机使用，暂不处理。
+
+**下一步**：Task 2 网络与外部依赖实测。
 
 ---
 
