@@ -84,7 +84,7 @@ go test -bench=. ./...
 - [x] 匹配层 `internal/matching`（`display_name` / `match_score`）
 - [x] InnerTube 搜索客户端 `internal/ytmusic`
 - [x] 搜索服务层 `internal/search`
-- [ ] 会话与选歌层 `internal/session`
+- [x] 会话与选歌层 `internal/session`
 - [ ] 下载层 `internal/download`（yt-dlp + singleflight + 限流）
 - [ ] HTTP API 层 `internal/httpapi`
 - [ ] 端到端联调 + 压测
