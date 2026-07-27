@@ -51,7 +51,14 @@ func resolveYtdlpPath(configured string) (string, error) {
 	if configured != "" {
 		candidates = append(candidates, configured)
 	}
-	// 常见名字
+	// Project-local bin/ (populated by scripts/get-ytdlp.ps1).
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "bin", "yt-dlp.exe"),
+			filepath.Join(wd, "bin", "yt-dlp"),
+		)
+	}
+	// Common names on PATH.
 	candidates = append(candidates, "yt-dlp", "yt-dlp.exe")
 
 	for _, c := range candidates {
@@ -64,7 +71,7 @@ func resolveYtdlpPath(configured string) (string, error) {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
 			return c, nil
 		}
-		// 也允许配置目录 + 默认文件名
+		// Also allow configuring a directory + default filename.
 		if st, err := os.Stat(filepath.Join(c, "yt-dlp.exe")); err == nil && !st.IsDir() {
 			return filepath.Join(c, "yt-dlp.exe"), nil
 		}
@@ -73,6 +80,55 @@ func resolveYtdlpPath(configured string) (string, error) {
 		}
 	}
 	return "", &YtdlpMissingError{Tried: configured}
+}
+
+// YtdlpVersion runs `yt-dlp --version` and returns a trimmed version string.
+// path may be empty; resolveYtdlpPath is used as a fallback.
+func YtdlpVersion(ctx context.Context, path string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resolved := strings.TrimSpace(path)
+	var err error
+	if resolved == "" {
+		resolved, err = resolveYtdlpPath("")
+		if err != nil {
+			return "", err
+		}
+	} else if st, serr := os.Stat(resolved); serr != nil || st.IsDir() {
+		// Allow directory or unresolved configured path.
+		resolved, err = resolveYtdlpPath(path)
+		if err != nil {
+			return "", err
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	stdout, stderr, err := ExecRunner{}.Run(cctx, resolved, []string{"--version"}, nil)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(stdout)
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("download: yt-dlp --version failed: %s", msg)
+	}
+	ver := strings.TrimSpace(stdout)
+	if ver == "" {
+		ver = strings.TrimSpace(stderr)
+	}
+	// yt-dlp prints a single line version like 2026.07.04
+	ver = strings.ReplaceAll(ver, "\r\n", "\n")
+	ver = strings.ReplaceAll(ver, "\r", "\n")
+	if i := strings.IndexByte(ver, '\n'); i >= 0 {
+		ver = strings.TrimSpace(ver[:i])
+	}
+	if ver == "" {
+		return "", fmt.Errorf("download: empty yt-dlp version output")
+	}
+	return ver, nil
 }
 
 func buildYtdlpArgs(opt YtdlpOptions) []string {

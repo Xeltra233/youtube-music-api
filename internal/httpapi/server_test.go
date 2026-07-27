@@ -194,6 +194,43 @@ func TestHealthz(t *testing.T) {
 	if int(m["default_limit"].(float64)) != 10 {
 		t.Fatalf("default_limit: %v", m["default_limit"])
 	}
+	if _, ok := m["ytdlp"]; !ok {
+		t.Fatalf("ytdlp field missing: %v", m)
+	}
+}
+
+func TestHealthzReportsYtdlpVersion(t *testing.T) {
+	cfg := testCfg(t)
+	store := session.NewStore(session.Options{TTL: cfg.SessionTTL})
+	items := sampleItems()
+	st := &stubSearcher{resp: &search.Response{
+		Query: "lemon", LimitRequested: 10, LimitUsed: 10,
+		Total: len(items), Results: items,
+	}}
+	path := filepath.Join(cfg.DownloadDir, "x.mp3")
+	_ = os.WriteFile(path, []byte("abc"), 0o644)
+	dl := &stubDownloader{result: &download.Result{
+		Path: path, Size: 3, Token: "0123456789abcdef0123456789abcdef",
+		Format: "mp3", VideoID: "3NNhrqHZqlI", ContentType: "audio/mpeg", Filename: "x.mp3",
+	}}
+	srv, err := New(Options{
+		Config: cfg, Searcher: st, Sessions: store, Downloader: dl,
+		YtdlpVersion: "2026.07.04",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := doJSON(t, srv.Handler(), "GET", "/healthz", nil, nil)
+	if rr.Code != 200 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["ytdlp"] != "2026.07.04" {
+		t.Fatalf("ytdlp=%v", m["ytdlp"])
+	}
 }
 
 func TestSearchOK(t *testing.T) {

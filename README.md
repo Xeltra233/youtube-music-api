@@ -26,49 +26,13 @@ bot 发来模糊歌名 → 本服务搜索并返回候选歌单（默认 10 条�
 
 ```powershell
 cd C:\project\test\youtube-music-api
-go build -o bin\ytmusic-bridge.exe .\cmd\ytmusic-bridge
-.\bin\ytmusic-bridge.exe
-
-# 另开一个窗口探活
+# ????? yt-dlp ? bin/
+# .\scripts\get-ytdlp.ps1
+# ???????-Background ?????????
+.\run.ps1
+# ??
+# .\run.ps1 -Background
 Invoke-RestMethod http://127.0.0.1:8787/healthz
-```
-
-## 配置
-
-配置来源优先级：**环境变量 > `.env` 文件 > 默认值**。数值项写错会直接启动失败并打印原因（不静默回落）。
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `HOST` / `PORT` | `127.0.0.1` / `8787` | 监听地址。默认只听本机 |
-| `API_KEY` | 空 | 非空时校验请求头 `X-API-Key` |
-| `DEFAULT_LIMIT` | `10` | bot 未指定 `limit` 时返回的条数 |
-| `MAX_LIMIT` | `20` | 单次上限。**低于 20 会被自动抬到 20** |
-| `MIN_SCORE` | `0.0` | 相似度下限默认值，`0` = 不过滤 |
-| `AUDIO_FORMAT` / `AUDIO_BITRATE` | `mp3` / `192` | 输出格式（`mp3`/`m4a`/`opus`）与码率 |
-| `DOWNLOAD_DIR` | `downloads` | 缓存目录，启动时自动创建 |
-| `FFMPEG_LOCATION` / `YTDLP_PATH` | 空 | 外部程序路径，留空则从 PATH 查找 |
-| `PROXY` / `COOKIES_FILE` | 空 | 直连不可用时的逃生口 |
-| `MAX_CONCURRENT_DOWNLOADS` | `2` | 同时运行的 yt-dlp 数量（多人使用时调高） |
-| `MAX_FILESIZE_MB` | `50` | 单文件上限，超出返回 `413` |
-| `DOWNLOAD_TIMEOUT_SECONDS` | `300` | 下载 + 转码总超时 |
-| `SESSION_TTL_SECONDS` | `1800` | 搜索会话有效期 |
-| `CACHE_TTL_SECONDS` / `CACHE_MAX_TOTAL_MB` | `86400` / `2048` | 音频缓存保留时长与目录总量上限 |
-| `CLEANUP_INTERVAL_SECONDS` | `300` | 后台清理周期 |
-| `SEARCH_TIMEOUT_SECONDS` | `15` | 搜索上游超时 |
-
-## 接口一览
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/healthz` | 探活，返回版本与 limit 配置 |
-| `POST` | `/search` | 模糊搜索，返回带 `index` / `display_name` / `match_score` 的候选列表 + `session_id` |
-| `POST` | `/download` | 按 `video_id` / `index` / `name` 选歌，返回音频二进制（`?mode=json` 改回 JSON） |
-| `GET` | `/file/{token}` | 取回缓存音频，支持 `Range` |
-
-字段级契约见 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)。
-
-## 开发
-
 ```powershell
 gofmt -l .          # 必须无输出
 go build ./...

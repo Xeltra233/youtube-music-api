@@ -40,21 +40,23 @@ type Downloader interface {
 
 // Server is the HTTP API surface.
 type Server struct {
-	cfg        *config.Config
-	searcher   Searcher
-	sessions   SessionStore
-	downloader Downloader
-	apiKey     string
-	now        func() time.Time
+	cfg          *config.Config
+	searcher     Searcher
+	sessions     SessionStore
+	downloader   Downloader
+	apiKey       string
+	ytdlpVersion string
+	now          func() time.Time
 }
 
 // Options configures a Server.
 type Options struct {
-	Config     *config.Config
-	Searcher   Searcher
-	Sessions   SessionStore
-	Downloader Downloader
-	Now        func() time.Time
+	Config       *config.Config
+	Searcher     Searcher
+	Sessions     SessionStore
+	Downloader   Downloader
+	YtdlpVersion string // optional; reported by /healthz
+	Now          func() time.Time
 }
 
 // New builds an HTTP server. cfg/searcher/sessions/downloader are required.
@@ -76,12 +78,13 @@ func New(opts Options) (*Server, error) {
 		now = time.Now
 	}
 	return &Server{
-		cfg:        opts.Config,
-		searcher:   opts.Searcher,
-		sessions:   opts.Sessions,
-		downloader: opts.Downloader,
-		apiKey:     opts.Config.APIKey,
-		now:        now,
+		cfg:          opts.Config,
+		searcher:     opts.Searcher,
+		sessions:     opts.Sessions,
+		downloader:   opts.Downloader,
+		apiKey:       opts.Config.APIKey,
+		ytdlpVersion: strings.TrimSpace(opts.YtdlpVersion),
+		now:          now,
 	}, nil
 }
 
@@ -96,12 +99,15 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"status":        "ok",
 		"version":       version.Version,
 		"default_limit": s.cfg.DefaultLimit,
 		"max_limit":     s.cfg.MaxLimit,
-	})
+	}
+	// Always include ytdlp; empty string means not detected at startup.
+	body["ytdlp"] = s.ytdlpVersion
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

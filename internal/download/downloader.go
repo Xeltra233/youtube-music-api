@@ -364,7 +364,28 @@ func contentTypeFor(format string) string {
 	}
 }
 
-// Cache 暴露给测试/清理（G8 会用）。
+// CacheDir returns the on-disk cache directory.
 func (d *Downloader) CacheDir() string {
 	return d.cfg.DownloadDir
+}
+
+// Cleanup removes expired cache entries and enforces CacheMaxTotalBytes.
+// Returns cleanup stats for logging.
+func (d *Downloader) Cleanup() (CleanupStats, error) {
+	if d == nil || d.cache == nil {
+		return CleanupStats{}, nil
+	}
+	maxBytes := int64(0)
+	if d.cfg != nil {
+		maxBytes = d.cfg.CacheMaxTotalBytes()
+	}
+	return d.cache.Cleanup(maxBytes)
+}
+
+// ResolveYtdlpPath resolves the configured yt-dlp path (or PATH / bin/).
+func (d *Downloader) ResolveYtdlpPath() (string, error) {
+	if d == nil || d.cfg == nil {
+		return resolveYtdlpPath("")
+	}
+	return resolveYtdlpPath(d.cfg.YtdlpPath)
 }

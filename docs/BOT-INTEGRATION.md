@@ -212,7 +212,7 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 ## 5. `GET /healthz` 探活
 
 ```json
-{"status":"ok","version":"0.1.0","default_limit":10,"max_limit":20}
+{"status":"ok","version":"0.1.0","default_limit":10,"max_limit":20,"ytdlp":"2026.07.04"}
 ```
 
 bot 启动时先打这个，确认桥接服务活着。

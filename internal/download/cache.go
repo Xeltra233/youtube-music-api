@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -35,7 +36,7 @@ type cacheIndex struct {
 // Cache 负责缓存索引落盘与 token 映射。
 //
 // 文件本体由 Downloader 写到 DownloadDir；这里只管索引与查找。
-// 后台 TTL / 总量清理留给 G8，本层只做惰性过期判断。
+// 后台 goroutine 可周期调用 Cleanup：TTL 过期 + 目录总量上限（删最旧）。
 type Cache struct {
 	dir       string
 	ttl       time.Duration
@@ -205,6 +206,144 @@ func (c *Cache) RemainingTTL(e CacheEntry) time.Duration {
 		return 0
 	}
 	return e.ExpiresAt.Sub(now)
+}
+
+// CleanupStats summarizes one cleanup pass.
+type CleanupStats struct {
+	ExpiredRemoved int
+	SizeRemoved    int
+	BytesFreed     int64
+	TotalBytes     int64
+	Entries        int
+}
+
+// Cleanup removes expired entries (and their files), then enforces maxBytes.
+// maxBytes <= 0 skips the size limit pass.
+func (c *Cache) Cleanup(maxBytes int64) (CleanupStats, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var stats CleanupStats
+	now := c.now()
+	changed := false
+
+	for key, e := range c.entries {
+		expired := !now.Before(e.ExpiresAt)
+		missing := false
+		if !expired {
+			if st, err := os.Stat(e.Path); err != nil || st.Size() <= 0 {
+				missing = true
+			}
+		}
+		if expired || missing {
+			c.removeEntryLocked(key, e, true)
+			stats.ExpiredRemoved++
+			changed = true
+		}
+	}
+
+	// Recompute total size from remaining entries.
+	type sized struct {
+		key  string
+		e    CacheEntry
+		size int64
+	}
+	items := make([]sized, 0, len(c.entries))
+	var total int64
+	for key, e := range c.entries {
+		size := e.Size
+		if st, err := os.Stat(e.Path); err == nil {
+			size = st.Size()
+			if size != e.Size {
+				e.Size = size
+				c.entries[key] = e
+				changed = true
+			}
+		}
+		items = append(items, sized{key: key, e: e, size: size})
+		total += size
+	}
+
+	if maxBytes > 0 && total > maxBytes {
+		// Oldest first: CreatedAt, then ExpiresAt, then key for stability.
+		sort.SliceStable(items, func(i, j int) bool {
+			if !items[i].e.CreatedAt.Equal(items[j].e.CreatedAt) {
+				return items[i].e.CreatedAt.Before(items[j].e.CreatedAt)
+			}
+			if !items[i].e.ExpiresAt.Equal(items[j].e.ExpiresAt) {
+				return items[i].e.ExpiresAt.Before(items[j].e.ExpiresAt)
+			}
+			return items[i].key < items[j].key
+		})
+		for _, it := range items {
+			if total <= maxBytes {
+				break
+			}
+			if _, ok := c.entries[it.key]; !ok {
+				continue
+			}
+			c.removeEntryLocked(it.key, it.e, true)
+			total -= it.size
+			if total < 0 {
+				total = 0
+			}
+			stats.SizeRemoved++
+			stats.BytesFreed += it.size
+			changed = true
+		}
+	}
+
+	stats.TotalBytes = total
+	stats.Entries = len(c.entries)
+	if changed {
+		if err := c.saveLocked(); err != nil {
+			return stats, err
+		}
+	}
+	return stats, nil
+}
+
+// removeEntryLocked drops an index entry and optionally deletes its file.
+// Caller must hold c.mu. Does not save the index.
+func (c *Cache) removeEntryLocked(key string, e CacheEntry, deleteFile bool) {
+	delete(c.entries, key)
+	if e.Token != "" {
+		delete(c.tokens, e.Token)
+	}
+	if !deleteFile || e.Path == "" {
+		return
+	}
+	// Never delete the index file itself.
+	if filepath.Clean(e.Path) == filepath.Clean(c.indexPath) {
+		return
+	}
+	// Only delete files under the cache directory.
+	if err := ensureUnderDir(c.dir, e.Path); err != nil {
+		return
+	}
+	_ = os.Remove(e.Path)
+}
+
+// Len returns the number of live cache entries (for tests/metrics).
+func (c *Cache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// TotalBytes returns the sum of entry sizes (uses Stat when available).
+func (c *Cache) TotalBytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var total int64
+	for _, e := range c.entries {
+		if st, err := os.Stat(e.Path); err == nil {
+			total += st.Size()
+			continue
+		}
+		total += e.Size
+	}
+	return total
 }
 
 func newToken() (string, error) {
