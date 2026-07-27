@@ -85,7 +85,7 @@ go test -bench=. ./...
 - [x] InnerTube 搜索客户端 `internal/ytmusic`
 - [x] 搜索服务层 `internal/search`
 - [x] 会话与选歌层 `internal/session`
-- [ ] 下载层 `internal/download`（yt-dlp + singleflight + 限流）
+- [x] 下载层 `internal/download`（yt-dlp + singleflight + 限流）
 - [ ] HTTP API 层 `internal/httpapi`
 - [ ] 端到端联调 + 压测
 
