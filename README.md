@@ -332,7 +332,9 @@ func main() {
 ## 下载稳定性
 
 - `/search` 成功不代表 `/download` 一定立刻成功（搜索与拉流是两条上游链路）
-- 下载失败时服务端会自动切换多个 YouTube player client，并带分片/网络重试
+- 下载策略对齐 spotube 的 yt-dlp 音源思路：先取稳定音频流，再转码
+- 默认优先 `android_vr` 客户端（实测比 ios/android+PO Token 稳）
+- 一键转码失败时，会回退「先下原始音轨 + 本地 ffmpeg 转码」
 - 仍失败时返回 `502 UPSTREAM_ERROR`（message 含「已自动重试」与 yt-dlp 摘要）
 - 公网机器若持续失败，优先检查出口网络、可选 `PROXY` / `COOKIES_FILE`，并保持镜像内 yt-dlp 为新版本
 

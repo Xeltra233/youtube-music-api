@@ -152,6 +152,9 @@ func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 		"--no-write-info-json",
 		"--no-write-thumbnail",
 		"--no-mtime",
+		// 对齐 spotube YtDlpEngine 的稳定开关
+		"--no-check-certificate",
+		"--ignore-errors",
 		// 下载稳定性：让 yt-dlp 自己先重试分片/瞬时网络错误
 		"--retries", "5",
 		"--fragment-retries", "5",
@@ -178,8 +181,50 @@ func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 	if len(extra) > 0 {
 		args = append(args, extra...)
 	}
-	// 稳定的音频选择：优先纯音频流，再回退 best。
-	args = append(args, "-f", "bestaudio/best")
+	// spotube / 实测：ba 优先，再回退 bestaudio/best。
+	args = append(args, "-f", "ba/bestaudio/best")
+	args = append(args, "--", opt.URL)
+	return args
+}
+
+// buildYtdlpRawArgs 只拉原始音轨，不在 yt-dlp 内转码（更接近 spotube 取流）。
+func buildYtdlpRawArgs(opt YtdlpOptions, extra []string) []string {
+	args := []string{
+		"--no-playlist",
+		"--no-progress",
+		"--newline",
+		"--output", opt.OutputPath,
+		"--no-write-playlist-metafiles",
+		"--no-write-comments",
+		"--no-write-info-json",
+		"--no-write-thumbnail",
+		"--no-mtime",
+		"--no-check-certificate",
+		"--ignore-errors",
+		"--retries", "5",
+		"--fragment-retries", "5",
+		"--retry-sleep", "linear=1::2",
+		"--socket-timeout", "20",
+		"--geo-bypass",
+		"--no-cache-dir",
+	}
+	if opt.FFmpegLocation != "" {
+		// raw 模式不强制转码，但保留位置无害。
+		args = append(args, "--ffmpeg-location", opt.FFmpegLocation)
+	}
+	if opt.Proxy != "" {
+		args = append(args, "--proxy", opt.Proxy)
+	}
+	if opt.CookiesFile != "" {
+		args = append(args, "--cookies", opt.CookiesFile)
+	}
+	if opt.MaxFilesize > 0 {
+		args = append(args, "--max-filesize", fmt.Sprintf("%d", opt.MaxFilesize))
+	}
+	if len(extra) > 0 {
+		args = append(args, extra...)
+	}
+	args = append(args, "-f", "ba/bestaudio/best")
 	args = append(args, "--", opt.URL)
 	return args
 }
@@ -196,16 +241,21 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 		ctx = context.Background()
 	}
 
-	// 多 player client 回退：YouTube 经常对单一客户端抽风/风控，
-	// android/ios 通常比纯 web 更稳，且少依赖 JS runtime。
+	// 策略顺序来自 spotube + 本机实测：
+	// 1) android_vr 最稳，不依赖 PO Token / JS runtime
+	// 2) 默认（yt-dlp 常自动走 android_vr）
+	// 3) 其它客户端兜底
+	// 注意：ios/android 常要 GVS PO Token，放最后且可跳过硬失败。
 	strategies := []struct {
 		name  string
 		extra []string
 	}{
-		{name: "android+ios+mweb", extra: []string{"--extractor-args", "youtube:player_client=android,ios,mweb"}},
-		{name: "android", extra: []string{"--extractor-args", "youtube:player_client=android"}},
-		{name: "tv+web", extra: []string{"--extractor-args", "youtube:player_client=tv_embedded,web"}},
+		{name: "android_vr", extra: []string{"--extractor-args", "youtube:player_client=android_vr"}},
 		{name: "default", extra: nil},
+		{name: "web_safari", extra: []string{"--extractor-args", "youtube:player_client=web_safari"}},
+		{name: "mweb", extra: []string{"--extractor-args", "youtube:player_client=mweb"}},
+		{name: "tv_embedded", extra: []string{"--extractor-args", "youtube:player_client=tv_embedded"}},
+		{name: "android", extra: []string{"--extractor-args", "youtube:player_client=android"}},
 	}
 
 	var last error
@@ -215,7 +265,7 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 		}
 		if i > 0 {
 			// 策略间短退避，避免连续打同一风控。
-			delay := time.Duration(i) * 700 * time.Millisecond
+			delay := time.Duration(i) * 400 * time.Millisecond
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -225,36 +275,159 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 			}
 		}
 
-		args := buildYtdlpArgsWithExtra(opt, st.extra)
-		stdout, stderr, err := runner.Run(ctx, path, args, nil)
-		if err == nil {
+		// 先走 spotube 同类「一键取流+转码」；失败再 raw 下载 + 本地 ffmpeg。
+		execErr := runYtdlpAttempt(ctx, runner, path, buildYtdlpArgsWithExtra(opt, st.extra), st.name+"|extract")
+		if execErr == nil {
 			return nil
-		}
-		// context 取消/超时优先
-		if ctx.Err() != nil {
-			return fmt.Errorf("download: yt-dlp canceled: %w", ctx.Err())
-		}
-		exitCode := -1
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		}
-		execErr := &ExecError{
-			ExitCode: exitCode,
-			Stderr:   stderr,
-			Stdout:   stdout,
-			Cmd:      path + " " + strings.Join(args, " "),
-			Strategy: st.name,
 		}
 		last = execErr
 		if !isTransientYtdlpError(execErr) {
 			return execErr
+		}
+
+		// raw 回退：先下原始音轨，再 ffmpeg 转目标格式（更接近 spotube 只取流）。
+		rawErr := runYtdlpRawThenConvert(ctx, runner, path, opt, st.extra, st.name)
+		if rawErr == nil {
+			return nil
+		}
+		last = rawErr
+		if !isTransientYtdlpError(rawErr) {
+			return rawErr
 		}
 	}
 	if last == nil {
 		return fmt.Errorf("download: yt-dlp failed with no attempts")
 	}
 	return last
+}
+
+func runYtdlpAttempt(ctx context.Context, runner CommandRunner, path string, args []string, strategy string) error {
+	stdout, stderr, err := runner.Run(ctx, path, args, nil)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("download: yt-dlp canceled: %w", ctx.Err())
+	}
+	exitCode := -1
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		exitCode = ee.ExitCode()
+	}
+	return &ExecError{
+		ExitCode: exitCode,
+		Stderr:   stderr,
+		Stdout:   stdout,
+		Cmd:      path + " " + strings.Join(args, " "),
+		Strategy: strategy,
+	}
+}
+
+func runYtdlpRawThenConvert(ctx context.Context, runner CommandRunner, ytdlpPath string, opt YtdlpOptions, extra []string, strategy string) error {
+	// 把输出模板改成 raw 旁路，避免覆盖 extract 残留逻辑；仍落在同一目录。
+	rawOpt := opt
+	// OutputPath 形如 stem.%(ext)s；raw 复用。
+	args := buildYtdlpRawArgs(rawOpt, extra)
+	if err := runYtdlpAttempt(ctx, runner, ytdlpPath, args, strategy+"|raw"); err != nil {
+		return err
+	}
+
+	// 找到 raw 文件
+	stem := strings.TrimSuffix(opt.OutputPath, ".%(ext)s")
+	if stem == opt.OutputPath {
+		stem = strings.TrimSuffix(opt.OutputPath, filepath.Ext(opt.OutputPath))
+	}
+	produced, err := findProducedFile(stem+".webm", opt.Format)
+	if err != nil {
+		produced, err = findProducedFile(stem+".m4a", opt.Format)
+	}
+	if err != nil {
+		produced, err = findProducedFile(stem+".tmp", opt.Format)
+	}
+	if err != nil {
+		return &ExecError{Stderr: err.Error(), Strategy: strategy + "|raw-missing"}
+	}
+
+	// 已是目标格式则直接可用
+	if strings.EqualFold(filepath.Ext(produced), "."+opt.Format) {
+		return nil
+	}
+
+	target := stem + "." + opt.Format
+	if err := convertAudioFile(ctx, opt.FFmpegLocation, produced, target, opt.Format, opt.Bitrate); err != nil {
+		return &ExecError{Stderr: err.Error(), Strategy: strategy + "|ffmpeg"}
+	}
+	// 转码成功后尽量删 raw，节省磁盘
+	if filepath.Clean(produced) != filepath.Clean(target) {
+		_ = os.Remove(produced)
+	}
+	return nil
+}
+
+func convertAudioFile(ctx context.Context, ffmpegLocation, input, output, format, bitrate string) error {
+	ffmpeg, err := resolveFFmpegPath(ffmpegLocation)
+	if err != nil {
+		return err
+	}
+	args := []string{"-y", "-i", input, "-vn"}
+	switch strings.ToLower(format) {
+	case "mp3":
+		args = append(args, "-acodec", "libmp3lame", "-b:a", bitrate+"K")
+	case "m4a":
+		args = append(args, "-acodec", "aac", "-b:a", bitrate+"K")
+	case "opus":
+		args = append(args, "-acodec", "libopus", "-b:a", bitrate+"K")
+	default:
+		return fmt.Errorf("unsupported convert format %q", format)
+	}
+	args = append(args, output)
+
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("ffmpeg convert failed: %s", msg)
+	}
+	if st, err := os.Stat(output); err != nil || st.Size() <= 0 {
+		return fmt.Errorf("ffmpeg produced empty output")
+	}
+	return nil
+}
+
+func resolveFFmpegPath(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	candidates := []string{}
+	if configured != "" {
+		candidates = append(candidates, configured)
+		// 若配置的是目录
+		candidates = append(candidates,
+			filepath.Join(configured, "ffmpeg"),
+			filepath.Join(configured, "ffmpeg.exe"),
+		)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "bin", "ffmpeg"),
+			filepath.Join(wd, "bin", "ffmpeg.exe"),
+		)
+	}
+	candidates = append(candidates, "ffmpeg", "ffmpeg.exe")
+	for _, c := range candidates {
+		if c == "ffmpeg" || c == "ffmpeg.exe" {
+			if p, err := exec.LookPath(c); err == nil {
+				return p, nil
+			}
+			continue
+		}
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("ffmpeg not found; set FFMPEG_LOCATION")
 }
 
 // isTransientYtdlpError 判断是否值得换 player client / 再试一次。
