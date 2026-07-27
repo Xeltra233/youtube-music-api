@@ -719,8 +719,57 @@ What / verification / residual risk / next:
 
 ---
 
-## [ ] Task G11：最终 review（R1–R11 逐条取证 + 修复 + 标记 goal 完成）
+## [x] Task G11：最终 review（R1–R12 逐条取证 + 修复 + 标记 goal 完成）
 
 目标：从 C 端、代码、安全、数据一致性、权限、错误处理、测试、构建、文档、回滚全面 review；修复所有已知高风险；逐条对照 plan.md §1（R1–R12）给出证据。
 
 结果：
+
+### 1. R1–R12 取证
+
+| 需求 | 结论 | 证据 |
+| --- | --- | --- |
+| R1 选型 | 通过 | `goal-1/plan.md` §3：搜索自研 InnerTube `WEB_REMIX`；下载 yt-dlp + ffmpeg；对照 ytmusicapi / YouTube.js |
+| R2 HTTP API | 通过 | `internal/httpapi/server.go` 路由：`GET /healthz`、`POST /search`、`POST /download`、`GET /file/{token}`；live healthz `status=ok` |
+| R3 模糊搜索 | 通过 | live `POST /search` query=`lemon kenshi yonezu` 返回候选；`internal/ytmusic` + `internal/search` |
+| R4 默认 10 / 最大 20 | 通过 | config 默认 `DEFAULT_LIMIT=10`、`MAX_LIMIT=20`；healthz 回显一致 |
+| R5 limit 由 bot 定，服务端硬上限 | 通过 | `MinimumMaxLimit=20`；`MaxLimit < 20` 抬到 20；`resolveLimit` 夹紧 |
+| R6 不足即返回 | 通过 | `search.Service` 填 `total`/`truncated`；不足不报错 |
+| R7 序号选择 | 通过 | `session.Select` 1-based `index`；live download `index=1` 成功 |
+| R8 全名选择 | 通过 | `selectByName` 精确/归一化/唯一模糊；多命中 `409 AMBIGUOUS_NAME`；G9 name path 通过 |
+| R9 下载音频 | 通过 | `internal/download` yt-dlp + ffmpeg；live mp3 `filesize=6148269`，ffprobe duration≈256.1s / ~192kbps |
+| R10 转发给 bot | 通过 | 默认二进制 + `X-Track-*`；`?mode=json` + `/file/{token}`（Range / ServeContent） |
+| R11 Go 高性能 | 通过 | 纯 Go 服务；无 Python 运行时依赖；singleflight + semaphore；e2e：search QPS≈31.73 / P99≈745ms；同曲 20 并发冷下载 wall≈5159ms；WorkingSet≈22.7MB；`-race` 通过 |
+| R12 bot 文档 | 通过 | `docs/BOT-INTEGRATION.md` §0 四接口全部「可用」；字段/错误码/示例/§9.5 G9 数据齐全；README 同步 |
+
+### 2. 全面检查
+
+- `gofmt -l .` 无输出
+- `go build ./...` / `go vet ./...` 通过
+- `YTM_SKIP_LIVE=1 go test ./... -count=1` 通过
+- `go test -race ./internal/download ./internal/httpapi ./internal/session -count=1` 通过
+- live：`healthz` ok（`ytdlp=2026.07.04`）；search → download(json) → `/file/{token}` → ffprobe 通过
+- 文档 UTF-8 中文正常；临时脚本已清理；外部工具在项目 `bin/`
+
+### 3. 安全 / 错误 / 数据一致性
+
+- 默认绑定 `127.0.0.1`；可选 `X-API-Key`
+- JSON body 1 MiB 上限；panic recover；token hex 校验；下载路径 `ensurePathInDir` / `ensureUnderDir`
+- 错误 envelope `{"code","message","detail"}`；已实现：`INVALID_REQUEST` `UNAUTHORIZED` `NOT_FOUND` `AMBIGUOUS_NAME` `SESSION_EXPIRED` `FILE_TOO_LARGE` `CANCELED` `UPSTREAM_ERROR` `TIMEOUT` `INTERNAL_ERROR`
+- **无** 真正 `429 RATE_LIMITED`：超并发排队，超时 `504 TIMEOUT`（文档已对齐）
+- `display_name` = `"标题 - 歌手1, 歌手2"`；`index` 1-based
+- 仅 `video_id` 且缓存无元数据时 JSON 标题字段可空：文档已注明
+
+### 4. 高风险修复
+
+- 本轮 review **未发现必须修复的新高风险 bug**；无需额外代码改动。
+
+### 5. 剩余风险
+
+- yt-dlp / InnerTube 上游偶发失败仍可能 flake
+- `bin/` gitignore，新机器需自备 yt-dlp/ffmpeg/ffprobe
+- G9 性能数字为本机快照，非 SLA
+
+### 6. 结论
+
+R1–R12 全部取证通过；构建/测试/race/live/文档门禁通过。goal 可标记完成。
