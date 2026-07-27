@@ -1,0 +1,198 @@
+ytmusic-bridge / bot 参数约定
+==========================
+
+本文给 bot 开发用：用户命令尾部参数怎么解析，以及调用本 API 时怎么传。
+服务端不会解析 /music 命令；只认 HTTP JSON 字段。
+
+
+1. bot 命令尾部参数（用户侧）
+----------------------------
+规则（你已实现的 Task 2）：
+- 只认「最后一个独立单词」
+- 白名单：mp3 / m4a / opus / flac / file / voice
+- 无参数时默认：voice
+- 歌名中间的格式词不剥离
+- 单独一个词且整句就是格式词时，仍可当普通关键词搜索（你现有规则）
+
+示例：
+  /music 1 mp3
+      → 选第 1 首；delivery=file；format=mp3
+
+  /music Scream Aim Fire - Bullet For My Valentine flac
+      → 完整歌名保留；delivery=file；format=flac
+
+  /music song mp3 live
+      → 不剥离（mp3 不是最后一个独立单词）
+
+  /music 晴天 周杰伦
+      → delivery=voice；format 由 bot 映射（见第 3 节）
+
+  /music 晴天 voice
+      → delivery=voice
+
+  /music 晴天 file
+      → delivery=file；format 用默认音频格式（建议 mp3，或读服务端配置）
+
+
+2. 两层概念：delivery vs format
+------------------------------
+A) deliveryMode（只存在于 bot，不要传给本 API）
+   - voice : 以「语音消息」发出（平台侧）
+   - file  : 以「文件/音频文件」发出（平台侧）
+
+B) format（要传给本 API 的 POST /download 字段）
+   服务端当前支持：
+     mp3  → Content-Type: audio/mpeg
+     m4a  → Content-Type: audio/mp4
+     opus → Content-Type: audio/ogg
+   服务端当前不支持：
+     flac → 会 400 INVALID_REQUEST（format must be mp3, m4a, or opus）
+
+服务端默认（请求没带 format 时）：
+  用环境变量 AUDIO_FORMAT，默认 mp3。
+  所以 bot 若要「按用户参数返回」，下载时必须显式传 format，不要依赖服务端默认。
+
+
+3. bot → API 推荐映射
+--------------------
+用户尾参          deliveryMode    调用 /download 的 format
+---------------------------------------------------------
+(无)              voice           opus          # 语音更合适 ogg/opus
+voice             voice           opus
+file              file            mp3           # 仅 file、未指定编码时
+mp3               file            mp3
+m4a               file            m4a
+opus              file            opus
+flac              file            （先不要调 API）提示用户暂不支持 flac
+file mp3 等组合   以最后一个词为准；若最后是 file/voice 则只改 delivery
+
+说明：
+- voice/file 是发送方式，不是音频容器本身。
+- 若用户写「... file mp3」，按你的「只认最后一词」→ 最后是 mp3 → file+mp3。
+- 若用户只写 file，建议 format=mp3。
+- 若用户只写 voice / 默认 voice，建议 format=opus，再用语音消息发出。
+
+
+4. 调用本 API 时怎么写
+--------------------
+Base URL 示例：
+  本机   http://127.0.0.1:8787
+  公网   https://你的域名
+
+鉴权（服务端 API_KEY 非空时必带）：
+  Header: X-API-Key: <服务端配置的密钥>
+
+4.1 搜索
+  POST /search
+  Content-Type: application/json; charset=utf-8
+
+  {
+    "query": "晴天 周杰伦",
+    "limit": 10,
+    "min_score": 0.35
+  }
+
+  响应关键字段：session_id、results[].index、results[].display_name、results[].video_id
+
+4.2 下载（按序号，最常用）
+  POST /download
+  Content-Type: application/json; charset=utf-8
+
+  {
+    "session_id": "s_xxx",
+    "index": 1,
+    "format": "opus"
+  }
+
+  注意：
+  - format 填 bot 映射后的值（mp3/m4a/opus），不要写 voice/file
+  - 不要写死永远 mp3；用户要 m4a/opus 就传对应值
+  - 默认二进制响应；文件扩展名与 Content-Type 跟 format 走
+
+4.3 下载（只要元数据 + 二次取文件）
+  POST /download?mode=json
+  body 同上
+
+  响应里看：
+    format      实际编码（以这个为准，不要自己猜 mp3）
+    filesize
+    file_url    例如 /file/<token>
+    cached
+
+  再：
+    GET {file_url}
+    可选 Range；同样要带 X-API-Key（若启用）
+
+4.4 直接 video_id 下载（收藏/重播）
+  {
+    "video_id": "3NNhrqHZqlI",
+    "format": "m4a"
+  }
+
+
+5. bot 收到响应后怎么发
+----------------------
+1) 以响应头 / JSON 的 format 为准，不要写死「这是 mp3」。
+2) deliveryMode=voice：
+   - 建议请求 format=opus
+   - 用平台「语音消息」API 发送二进制
+3) deliveryMode=file：
+   - 用平台「文件/音频文件」发送
+   - 文件名可用：display_name + "." + format
+     或响应头 Content-Disposition
+4) Content-Type 对照：
+   mp3  → audio/mpeg
+   m4a  → audio/mp4
+   opus → audio/ogg
+5) 若 JSON 模式：先读 body.format / body.file_url，再下载文件。
+
+
+6. 错误与回退（bot 侧建议）
+--------------------------
+- 400 + format 相关：用户要了 flac 或不支持格式 → 提示「仅支持 mp3/m4a/opus」
+- 410 SESSION_EXPIRED：重新 /search
+- 409 AMBIGUOUS_NAME：让用户改用序号
+- 502/504：有限次重试或换一首
+- 401：检查域名对应环境的 API_KEY 是否配对
+
+
+7. 最小伪代码
+------------
+parse(command) -> query_or_index, deliveryMode, formatToken
+
+if formatToken in (mp3, m4a, opus):
+    delivery = file
+    apiFormat = formatToken
+elif formatToken == file:
+    delivery = file
+    apiFormat = mp3
+elif formatToken == voice or formatToken is empty:
+    delivery = voice
+    apiFormat = opus
+elif formatToken == flac:
+    reply("暂不支持 flac，请用 mp3/m4a/opus")
+    return
+
+# 搜索或选歌后：
+POST /download {
+  session_id, index|name|video_id,
+  format: apiFormat
+}
+
+# 发送时：
+if delivery == voice: sendVoice(bytes)
+else: sendFile(bytes, filename=title + "." + actualFormat)
+
+
+8. 和环境变量的关系
+------------------
+服务端：
+  HOST=0.0.0.0          # 公网/容器监听全部网卡
+  PORT=8787             # 或平台注入的 PORT
+  API_KEY=...           # 公网务必设置
+  AUDIO_FORMAT=mp3      # 仅当请求省略 format 时的默认值
+
+bot 侧：
+  BASE_URL=https://你的域名
+  X-API-Key=与服务端 API_KEY 相同
+  永远优先把用户选的 format 传给 /download，不要省略后赌默认值

@@ -10,6 +10,8 @@
 4. 本服务下载音频，并以二进制（或 JSON + `file_url`）返回
 
 > **Bot 开发者请先读 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)**：完整契约、字段语义、错误码、Python / Go / PowerShell 示例，以及并发行为说明。
+>
+> 用户命令尾参（`mp3` / `m4a` / `opus` / `file` / `voice`）与 API 字段映射见 [`docs/BOT-PARAMS.txt`](docs/BOT-PARAMS.txt)。
 
 ## 技术栈与选型
 
@@ -343,3 +345,13 @@ go test -bench=. ./internal/matching ./internal/session
 仅供个人学习或私有 bot 使用。请遵守 YouTube 服务条款与当地版权法。默认只绑定本机 `127.0.0.1`。
 
 任务日志：[`goal-1/tasks.md`](goal-1/tasks.md)。
+
+## 容器部署
+
+仓库根目录提供 `Dockerfile`：
+
+- 编译入口：`./cmd/ytmusic-bridge`（不要在根目录裸 `go build`）
+- 镜像内已含 `yt-dlp` 与 `ffmpeg`
+- 默认 `HOST=0.0.0.0`，端口读 `PORT`（默认 `8787`）
+- 公网请设置 `API_KEY`，bot 用请求头 `X-API-Key` 调用
+- 域名在反代/DNS 侧配置；本服务只提供 HTTP API

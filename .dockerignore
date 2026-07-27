@@ -1,0 +1,17 @@
+.git
+.gocache
+.agents
+bin
+downloads
+tmp
+dist
+*.log
+*.exe
+.env
+.env.*
+!.env.example
+goal-1
+docs
+**/*_test.go
+**/*.md
+!README.md
