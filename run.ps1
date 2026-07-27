@@ -41,6 +41,25 @@ if ($Port) {
     $env:PORT = $Port
 }
 
+# Prefer project-local tools under bin/ (standalone copies; no external tool dirs).
+if (-not $env:YTDLP_PATH -and (Test-Path -LiteralPath $Ytdlp)) {
+    $env:YTDLP_PATH = $Ytdlp
+}
+$LocalFFmpegDir = $BinDir
+$LocalFFmpeg = Join-Path $BinDir "ffmpeg.exe"
+$LocalFFprobe = Join-Path $BinDir "ffprobe.exe"
+if (-not $env:FFMPEG_LOCATION) {
+    if (Test-Path -LiteralPath $LocalFFmpeg) {
+        $env:FFMPEG_LOCATION = $LocalFFmpeg
+    } elseif (Test-Path -LiteralPath $LocalFFprobe) {
+        $env:FFMPEG_LOCATION = $LocalFFmpegDir
+    }
+}
+if (-not $env:FFPROBE_PATH -and (Test-Path -LiteralPath $LocalFFprobe)) {
+    $env:FFPROBE_PATH = $LocalFFprobe
+}
+
+
 if ($Background) {
     # Hidden window, no focus steal.
     $p = Start-Process -FilePath $Exe -WorkingDirectory $Root -WindowStyle Hidden -PassThru

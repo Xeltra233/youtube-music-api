@@ -470,10 +470,10 @@ func TestLiveDownloadLemon(t *testing.T) {
 	}
 	ytdlp := os.Getenv("YTDLP_PATH")
 	if ytdlp == "" {
-		// 本机已知路径
+		// Prefer project-local standalone binary only (no external tool dirs).
 		candidates := []string{
-			`C:\Users\Xeltra\Desktop\工具\yt-dlp_win\yt-dlp.exe`,
-			`C:\Users\Xeltra\Downloads\Programs\yt-dlp_x86.exe`,
+			filepath.Join("bin", "yt-dlp.exe"),
+			filepath.Join("bin", "yt-dlp"),
 		}
 		for _, c := range candidates {
 			if st, err := os.Stat(c); err == nil && !st.IsDir() {
@@ -490,13 +490,16 @@ func TestLiveDownloadLemon(t *testing.T) {
 		}
 	}
 	if ytdlp == "" {
-		t.Skip("yt-dlp not found; set YTDLP_PATH")
+		t.Skip("yt-dlp not found; set YTDLP_PATH or place bin/yt-dlp.exe")
 	}
 	ffmpeg := os.Getenv("FFMPEG_LOCATION")
 	if ffmpeg == "" {
-		ffmpeg = `C:\Program Files\ffmpeg-8.1.1-essentials_build\bin`
-		if _, err := os.Stat(ffmpeg); err != nil {
-			ffmpeg = ""
+		// Prefer project-local copy under bin/.
+		for _, c := range []string{filepath.Join("bin", "ffmpeg.exe"), filepath.Join("bin", "ffmpeg"), "bin"} {
+			if _, err := os.Stat(c); err == nil {
+				ffmpeg = c
+				break
+			}
 		}
 	}
 
@@ -545,14 +548,30 @@ func TestLiveDownloadLemon(t *testing.T) {
 		t.Fatalf("size mismatch stat=%d res=%d", st.Size(), res.Size)
 	}
 
-	// ffprobe 校验
-	ffprobe, err := exec.LookPath("ffprobe")
-	if err != nil {
-		ffprobe = filepath.Join(ffmpeg, "ffprobe.exe")
-		if _, err := os.Stat(ffprobe); err != nil {
-			t.Logf("ffprobe not found, skip media probe; file size=%d", res.Size)
-			return
+	// ffprobe validation prefers project bin/
+	ffprobe := ""
+	for _, c := range []string{
+		filepath.Join("bin", "ffprobe.exe"),
+		filepath.Join("bin", "ffprobe"),
+		filepath.Join(ffmpeg, "ffprobe.exe"),
+		filepath.Join(ffmpeg, "ffprobe"),
+	} {
+		if c == "" {
+			continue
 		}
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			ffprobe = c
+			break
+		}
+	}
+	if ffprobe == "" {
+		if p, err := exec.LookPath("ffprobe"); err == nil {
+			ffprobe = p
+		}
+	}
+	if ffprobe == "" {
+		t.Logf("ffprobe not found, skip media probe; file size=%d", res.Size)
+		return
 	}
 	cmd := exec.Command(ffprobe, "-v", "error", "-show_entries", "format=duration,bit_rate", "-of", "json", res.Path)
 	out, err := cmd.CombinedOutput()

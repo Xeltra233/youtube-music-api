@@ -1,60 +1,88 @@
 # ytmusic-bridge
 
-YouTube Music 搜索 + 下载 HTTP API，供 bot 调用。**Go 实现，零第三方运行期依赖。**
+YouTube Music search + download HTTP API for bots. **Implemented in Go with no third-party runtime deps.**
 
-bot 发来模糊歌名 → 本服务搜索并返回候选歌单（默认 10 条，最多 20 条）→ bot 用**序号**或**歌名全称**选歌 → 本服务下载音频并回传二进制。
+Bot sends a fuzzy song name -> this service searches and returns candidates (default 10, max 20) -> bot picks by **index** or **full display name** -> this service downloads audio and returns binary.
 
-> **bot 开发者请直接看 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)** —— 完整接口契约、字段说明、错误码、Python/Go/PowerShell 示例、并发行为。
+> **Bot developers: read [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)** for the full contract, fields, error codes, Python/Go/PowerShell samples, and concurrency notes.
 
-## 技术选型
+## Stack
 
-| 用途 | 方案 | 理由 |
+| Area | Choice | Why |
 | --- | --- | --- |
-| 搜索 | 自研 InnerTube `WEB_REMIX` 客户端（Go 标准库） | 只需 `/youtubei/v1/search` 一个端点，零依赖、连接池与超时完全可控；协议细节对照 [`sigma67/ytmusicapi`](https://github.com/sigma67/ytmusicapi)（2.8k★）与 [`LuanRT/YouTube.js`](https://github.com/LuanRT/YouTube.js)（5k★） |
-| 下载 | [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)（外部二进制，180k★）+ ffmpeg | 抗 YouTube 变更能力最强，可独立升级；Go 服务本体不含 Python 依赖 |
-| Web 框架 | 标准库 `net/http` | 不引 gin/echo，减少依赖、每请求一 goroutine 天生并发 |
+| Search | Homegrown InnerTube `WEB_REMIX` client (Go stdlib) | Only needs `/youtubei/v1/search`; zero deps; protocol checked against [`sigma67/ytmusicapi`](https://github.com/sigma67/ytmusicapi) and [`LuanRT/YouTube.js`](https://github.com/LuanRT/YouTube.js) |
+| Download | [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) external binary + ffmpeg | Best resilience to YouTube changes; Go service itself has no Python dependency |
+| HTTP | stdlib `net/http` | No gin/echo; one goroutine per request |
 
-备选与落选理由（Go 生态调研）见 [`goal-1/plan.md`](goal-1/plan.md) §3。
+See [`goal-1/plan.md`](goal-1/plan.md) section 3 for Go-ecosystem survey notes.
 
-## 环境要求
+## Requirements
 
 - Go 1.26+
-- ffmpeg / ffprobe（转码）
-- yt-dlp（下载；后续由 `scripts/get-ytdlp.ps1` 下载到项目 `bin/`，不改系统 PATH）
+- **Project-local tools under `bin/` (copy/download into this project; do not mount external tool directories)**
+  - `bin/yt-dlp.exe`: `.\scripts\get-ytdlp.ps1` (standalone build)
+  - `bin/ffmpeg.exe` + `bin/ffprobe.exe`: copy standalone/essentials binaries into `bin/`
+- Optional: copy `.env.example` to `.env`; default listen `127.0.0.1:8787`
 
-## 快速开始
+## Quick start
 
 ```powershell
 cd C:\project\test\youtube-music-api
-# ????? yt-dlp ? bin/
-# .\scripts\get-ytdlp.ps1
-# ???????-Background ?????????
+
+# 1) project-local tools (bin/ is gitignored)
+.\scripts\get-ytdlp.ps1
+# also copy ffmpeg.exe / ffprobe.exe into bin\
+
+# 2) start (prefers bin/ tools; -Background avoids focus steal)
 .\run.ps1
-# ??
+# or
 # .\run.ps1 -Background
+
 Invoke-RestMethod http://127.0.0.1:8787/healthz
+```
+
+## E2E + benchmarks (R11)
+
 ```powershell
-gofmt -l .          # 必须无输出
+.\scripts\e2e.ps1
+# report: goal-1/e2e-report.json
+```
+
+Local snapshot (query=`lemon kenshi yonezu`, project-local `bin/yt-dlp` + `bin/ffmpeg`):
+
+| Item | Result |
+| --- | --- |
+| index / name / cache paths | pass (ffprobe duration/bitrate ~192 kbps) |
+| `/search` 20 concurrent x 60 requests | **QPS ~ 31.7**, **P50 ~ 480 ms**, **P99 ~ 745 ms** |
+| same-song 20 concurrent downloads (cold) | wall ~ **5.2 s** (~one download), then `cached=true` (singleflight) |
+| server WorkingSet | ~ **22.7 MB** |
+
+Full JSON: [`goal-1/e2e-report.json`](goal-1/e2e-report.json).
+
+## Dev checks
+
+```powershell
+gofmt -l .          # must be empty
 go build ./...
 go vet ./...
 go test ./...
-go test -bench=. ./...
+go test -bench=. ./internal/matching ./internal/session
 ```
 
-## 实现进度
+## Progress
 
-- [x] 项目骨架 + 配置模块（`internal/config`）
-- [x] bot 接入文档（`docs/BOT-INTEGRATION.md`）
-- [x] 匹配层 `internal/matching`（`display_name` / `match_score`）
-- [x] InnerTube 搜索客户端 `internal/ytmusic`
-- [x] 搜索服务层 `internal/search`
-- [x] 会话与选歌层 `internal/session`
-- [x] 下载层 `internal/download`（yt-dlp + singleflight + 限流）
-- [x] HTTP API 层 `internal/httpapi`
-- [ ] 端到端联调 + 压测
+- [x] skeleton + config (`internal/config`)
+- [x] bot integration doc (`docs/BOT-INTEGRATION.md`)
+- [x] matching (`internal/matching`: `display_name` / `match_score`)
+- [x] InnerTube search client (`internal/ytmusic`)
+- [x] search service (`internal/search`)
+- [x] session + select (`internal/session`)
+- [x] download layer (`internal/download`: yt-dlp + singleflight + limits)
+- [x] HTTP API (`internal/httpapi`)
+- [x] e2e + benchmarks (`cmd/e2e` / `scripts/e2e.ps1`)
 
-逐任务进度与验证记录见 [`goal-1/tasks.md`](goal-1/tasks.md)。
+Task log: [`goal-1/tasks.md`](goal-1/tasks.md).
 
-## 合规声明
+## Compliance
 
-仅供个人学习与私人使用。请遵守 YouTube 服务条款及所在地版权法律，勿用于公开分发或商业用途。默认只监听 `127.0.0.1`。
+Personal learning / private use only. Follow YouTube ToS and local copyright law. Default bind is `127.0.0.1`.

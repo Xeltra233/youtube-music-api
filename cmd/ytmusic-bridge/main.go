@@ -42,6 +42,12 @@ func run() error {
 			cfg.YtdlpPath = p
 		}
 	}
+	// Prefer project bin/ffmpeg when FFMPEG_LOCATION is empty.
+	if cfg.FFmpegLocation == "" {
+		if p, err := localBinFFmpeg(); err == nil {
+			cfg.FFmpegLocation = p
+		}
+	}
 
 	ytClient, err := ytmusic.New(ytmusic.Options{
 		Timeout: cfg.SearchTimeout,
@@ -174,6 +180,28 @@ func localBinYtdlp() (string, error) {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p, nil
 		}
+	}
+	return "", os.ErrNotExist
+}
+
+func localBinFFmpeg() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{"ffmpeg.exe", "ffmpeg"} {
+		p := filepath.Join(wd, "bin", name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, nil
+		}
+	}
+	// Directory form is accepted by yt-dlp --ffmpeg-location.
+	dir := filepath.Join(wd, "bin")
+	if st, err := os.Stat(filepath.Join(dir, "ffprobe.exe")); err == nil && !st.IsDir() {
+		return dir, nil
+	}
+	if st, err := os.Stat(filepath.Join(dir, "ffprobe")); err == nil && !st.IsDir() {
+		return dir, nil
 	}
 	return "", os.ErrNotExist
 }

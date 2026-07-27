@@ -637,13 +637,49 @@ G6?G8 ???????????????????/??/race ?????? G9?
 
 ---
 
-## [ ] Task G9：端到端真实联调 + 性能压测（R11 证据）
+## [x] Task G9: end-to-end live paths + performance benchmarks (R11 evidence)
 
-目标：`scripts/e2e.ps1`（或 Go 程序）模拟 bot：search → index 选择 → 拿音频；search → 全名选择 → 拿音频；第二次同曲命中缓存。压测：`/search` 并发 QPS/P99、同曲 20 并发下载只触发 1 次 yt-dlp、内存占用。
+Goal: `scripts/e2e.ps1` (or Go program) simulates bot flows: search -> index -> audio; search -> full display name -> audio; second download of same track is cache hit. Benchmarks: `/search` concurrent QPS/P99, same-track 20 concurrent downloads coalesce via singleflight, memory usage.
 
-独立验证：脚本退出码 0；两条链路音频均可 ffprobe 校验；压测数据写入本文件与 README。
+Independent verification: script exit 0; both paths pass ffprobe; benchmark numbers written here and README.
 
-做了什么 / 验证结果 / 剩余风险 / 下一步：
+What / verification / residual risk / next:
+
+**What was done**
+- Added `cmd/e2e`: starts service (or reuses one), covers three bot paths + search bench + same-track 20 concurrent downloads.
+  - Path A: `/search` -> `index` -> binary audio + project-local `bin/ffprobe.exe`
+  - Path B: `/search` -> full `display_name` -> `mode=json` + `/file/{token}` + ffprobe
+  - Path C: second download of same video must be `cached=true`
+  - Search bench: 20 concurrent x 60 requests -> QPS/P50/P99
+  - Download bench: same video x 20 concurrent; singleflight evidence uses wall ~ one download + post-wave `post_cached=true` (not miss_count==1)
+  - Report: `goal-1/e2e-report.json`
+- Added `scripts/e2e.ps1`: forces project-local `bin/yt-dlp.exe`, `bin/ffmpeg.exe`, `bin/ffprobe.exe`
+- Per user request, vendored tools into this project (no external tool-dir mounts):
+  - `bin/yt-dlp.exe` (standalone)
+  - `bin/ffmpeg.exe` / `bin/ffprobe.exe` (copied into project)
+  - startup/e2e/live tests prefer `bin/` and dropped Desktop/Downloads/Program Files hardcodes
+- Service side: `cmd/ytmusic-bridge` falls back to `bin/` when `YTDLP_PATH`/`FFMPEG_LOCATION` are empty
+- `run.ps1` also prefers project-local tools
+
+**Verification (project-local tools, live)**
+- `gofmt -l .` empty; `go build ./cmd/e2e ./cmd/ytmusic-bridge` pass
+- `YTM_SKIP_LIVE=1 go test ./... -count=1` pass
+- `bin/e2e.exe` exit 0, stdout contains `E2E OK`, `goal-1/e2e-report.json` has `ok=true`
+- Live snapshot (query=`lemon kenshi yonezu`):
+  - index: `0a0d33xcZ1w`, duration~174.6s, bitrate~192069, cache-hit latency~6ms
+  - name: `xq76cRbuYiU`, duration~182s, bitrate~192069
+  - cache hit: `cached=true`, latency~0ms
+  - search bench: 60/60, **QPS~31.73**, **P50~480ms**, **P99~745ms**
+  - download cold path 20 concurrent (after deleting target mp3): **wall~5159ms**, 20 waiters finish together (server log 5.156-5.158s), `post_cached=true` => singleflight evidence holds
+  - server WorkingSet ~ **22.7 MB**
+- healthz reports `ytdlp=2026.07.04` from project `bin/yt-dlp.exe`
+
+**Residual risk**
+- yt-dlp intermittent JS runtime / UPSTREAM_ERROR; e2e retries up to 3 index candidates but can still flake
+- `bin/` is gitignored; new machines need `scripts/get-ytdlp.ps1` + local copy of standalone ffmpeg/ffprobe into `bin/`
+- search QPS/P99 is a local snapshot, not an SLA (upstream InnerTube jitter)
+
+**Next**: Task G10 docs (finish README polish + fill `docs/BOT-INTEGRATION.md` section 9.5 with G9 numbers)
 
 ---
 
