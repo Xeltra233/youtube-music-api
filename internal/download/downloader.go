@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xeltra/ytmusic-bridge/internal/config"
+	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 )
@@ -217,11 +218,16 @@ func (d *Downloader) downloadOnce(ctx context.Context, req Request, videoID, for
 	ffmpegLoc := strings.TrimSpace(d.cfg.FFmpegLocation)
 	// 若配置的是 ffmpeg.exe 路径，传其目录给 --ffmpeg-location 也可用；
 	// yt-dlp 同时接受文件或目录。
+	cookieFile := strings.TrimSpace(d.cfg.CookiesFile)
+	// 每次下载前尝试把目录里新丢的 txt 提升到稳定文件（路径不变）。
+	if d.cfg.CookiesDir != "" && cookieFile != "" {
+		_ = cookies.RefreshDropIns(d.cfg.CookiesDir, cookieFile)
+	}
 	opt := YtdlpOptions{
 		YtdlpPath:      d.cfg.YtdlpPath,
 		FFmpegLocation: ffmpegLoc,
 		Proxy:          d.cfg.Proxy,
-		CookiesFile:    d.cfg.CookiesFile,
+		CookiesFile:    cookieFile,
 		Format:         format,
 		Bitrate:        bitrate,
 		OutputPath:     outTemplate,

@@ -36,7 +36,7 @@ WORKDIR /app
 
 COPY --from=builder /out/ytmusic-bridge /app/ytmusic-bridge
 
-RUN mkdir -p /app/downloads /app/bin \
+RUN mkdir -p /app/downloads /app/bin /app/cookies \
   && ln -sf /usr/local/bin/yt-dlp /app/bin/yt-dlp \
   && ln -sf /usr/bin/ffmpeg /app/bin/ffmpeg \
   && ln -sf /usr/bin/ffprobe /app/bin/ffprobe
@@ -47,6 +47,7 @@ ENV HOST=0.0.0.0 \
     DOWNLOAD_DIR=/app/downloads \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
     FFMPEG_LOCATION=/usr/bin/ffmpeg \
+    COOKIES_DIR=/app/cookies \
     PATH="/usr/local/bin:${PATH}"
 
 EXPOSE 8787

@@ -6,6 +6,10 @@ tmp/
 dist/
 *.log
 *.exe
+# 仅忽略仓库根目录挂载用的 cookies 数据；不要误伤 internal/cookies 源码
+/cookies/**
+!/cookies/.gitkeep
+!/cookies/README.md
 # 只忽略仓库根目录下的构建产物，不要误伤 cmd/ytmusic-bridge/ 源码目录
 /ytmusic-bridge
 

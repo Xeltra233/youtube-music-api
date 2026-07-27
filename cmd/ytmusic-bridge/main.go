@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/xeltra/ytmusic-bridge/internal/config"
+	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 	"github.com/xeltra/ytmusic-bridge/internal/download"
 	"github.com/xeltra/ytmusic-bridge/internal/httpapi"
 	"github.com/xeltra/ytmusic-bridge/internal/search"
@@ -36,6 +37,24 @@ func run() error {
 		return err
 	}
 
+	// cookies/ 目录：云容器挂载文件夹；任意 Netscape txt 丢进去即可。
+	if err := cookies.TouchDirForMount(cfg.CookiesDir); err != nil {
+		log.Printf("warning: cookies dir: %v", err)
+	}
+	if resolved, err := cookies.Resolve(cookies.ResolveOptions{
+		Dir:  cfg.CookiesDir,
+		File: cfg.CookiesFile,
+	}); err != nil {
+		log.Printf("warning: cookies resolve: %v", err)
+	} else {
+		cfg.CookiesFile = resolved
+		if cookies.FileExistsNonEmpty(resolved) {
+			log.Printf("cookies: using %s", resolved)
+		} else {
+			log.Printf("cookies: dir ready at %s (drop any Netscape .txt to enable)", cfg.CookiesDir)
+		}
+	}
+
 	// Prefer project bin/yt-dlp when YTDLP_PATH is empty.
 	if cfg.YtdlpPath == "" {
 		if p, err := localBinYtdlp(); err == nil {
@@ -50,8 +69,9 @@ func run() error {
 	}
 
 	ytClient, err := ytmusic.New(ytmusic.Options{
-		Timeout: cfg.SearchTimeout,
-		Proxy:   cfg.Proxy,
+		Timeout:     cfg.SearchTimeout,
+		Proxy:       cfg.Proxy,
+		CookiesFile: cfg.CookiesFile,
 	})
 	if err != nil {
 		return err
@@ -101,6 +121,51 @@ func run() error {
 		runCleanupLoop(ctx, cfg, sess, dl)
 	}()
 
+	// Cookie 自动保活（环境变量 COOKIES_KEEPALIVE=1 开启）。
+	keepaliveDone := make(chan struct{})
+	go func() {
+		defer close(keepaliveDone)
+		if !cfg.CookiesKeepAlive {
+			return
+		}
+		log.Printf("cookies keepalive: enabled every %s", cfg.CookiesKeepAliveEvery)
+		ticker := time.NewTicker(cfg.CookiesKeepAliveEvery)
+		defer ticker.Stop()
+		stable := cfg.CookiesFile
+		runOnce := func() {
+			// 用户新丢的任意文件名 txt → 提升到稳定 youtube.txt（路径不变，无数据竞争）。
+			_ = cookies.RefreshDropIns(cfg.CookiesDir, stable)
+			if !cookies.FileExistsNonEmpty(stable) {
+				log.Printf("cookies keepalive: waiting for file in %s", cfg.CookiesDir)
+				return
+			}
+			if err := cookies.KeepAliveOnce(ctx, cookies.KeepAliveOptions{
+				CookiesFile: stable,
+				YtdlpPath:   cfg.YtdlpPath,
+				Proxy:       cfg.Proxy,
+			}); err != nil {
+				log.Printf("cookies keepalive: %v", err)
+				return
+			}
+			log.Printf("cookies keepalive: refreshed %s", stable)
+		}
+		// 启动后短延迟先跑一次
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+			runOnce()
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runOnce()
+			}
+		}
+	}()
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("ytmusic-bridge %s listening on http://%s", version.Version, cfg.Addr())
@@ -113,6 +178,7 @@ func run() error {
 	case err := <-errCh:
 		stop()
 		<-cleanupDone
+		<-keepaliveDone
 		return err
 	case <-ctx.Done():
 		log.Println("shutdown signal received, draining...")
@@ -121,6 +187,7 @@ func run() error {
 		err := srv.Shutdown(shutdownCtx)
 		// Wait for cleanup loop to exit after ctx cancel.
 		<-cleanupDone
+		<-keepaliveDone
 		// Final cleanup pass before exit.
 		_ = sess.Cleanup()
 		if _, cerr := dl.Cleanup(); cerr != nil {

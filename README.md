@@ -91,6 +91,9 @@ go build -o bin\ytmusic-bridge.exe .\cmd\ytmusic-bridge
 | `FFMPEG_LOCATION` | 空 → 自动 `bin/ffmpeg.exe` 或 `bin/` | ffmpeg 可执行文件路径或所在目录 |
 | `PROXY` | 空 | 可选代理 |
 | `COOKIES_FILE` | 空 | 可选 cookies 文件路径 |
+| `COOKIES_DIR` | `cookies` | cookies **文件夹**（云容器挂载这个目录） |
+| `COOKIES_KEEPALIVE` | `0` | `1` 开启自动保活回写 |
+| `COOKIES_KEEPALIVE_INTERVAL_SECONDS` | `21600` | 保活间隔（秒），默认 6 小时 |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | yt-dlp 并发上限；超出后**排队** |
 | `MAX_FILESIZE_MB` | `50` | 单文件上限；超限返回 `413 FILE_TOO_LARGE` |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `300` | 下载超时（秒） |
@@ -364,3 +367,25 @@ go test -bench=. ./internal/matching ./internal/session
 - 默认 `HOST=0.0.0.0`，端口读 `PORT`（默认 `8787`）
 - 公网请设置 `API_KEY`，bot 用请求头 `X-API-Key` 调用
 - 域名在反代/DNS 侧配置；本服务只提供 HTTP API
+
+### 云容器挂载（cookies）
+
+云平台通常**不能稳定挂单文件**，请挂载文件夹：
+
+| 容器路径 | 说明 |
+| --- | --- |
+| `/app/cookies` | 放入任意 Netscape 导出的 `.txt`（文件名随意） |
+| `/app/downloads` | 可选，音频缓存持久化 |
+
+环境变量示例：
+
+```text
+COOKIES_DIR=/app/cookies
+COOKIES_KEEPALIVE=1
+HOST=0.0.0.0
+API_KEY=你的密钥
+```
+
+用法：把浏览器导出的 cookies 文本丢进挂载目录即可。服务会自动提升为 `youtube.txt`，并在保活开启时定期用 yt-dlp 回写刷新。
+
+**不要**把真实 cookie 提交到 git 或推进公开仓库。

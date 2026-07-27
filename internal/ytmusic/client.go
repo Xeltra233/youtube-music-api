@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 )
 
 const (
@@ -31,6 +33,9 @@ type Options struct {
 	Timeout time.Duration
 	// Proxy is an optional HTTP(S) proxy URL, e.g. "http://127.0.0.1:7890".
 	Proxy string
+	// CookiesFile is an optional Netscape cookies.txt used for authenticated search.
+	// The file is re-read each request so keepalive writeback is picked up.
+	CookiesFile string
 	// APIKey overrides the default WEB_REMIX key. Empty keeps the default.
 	APIKey string
 	// BaseURL overrides the search endpoint (useful for tests). Empty keeps the default.
@@ -44,12 +49,13 @@ type Options struct {
 
 // Client talks to YouTube Music InnerTube search.
 type Client struct {
-	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	userAgent  string
-	hl         string
-	gl         string
+	httpClient  *http.Client
+	apiKey      string
+	baseURL     string
+	userAgent   string
+	hl          string
+	gl          string
+	cookiesFile string
 }
 
 // New creates a reusable Client. The underlying HTTP client keeps connections alive.
@@ -108,12 +114,13 @@ func New(opts Options) (*Client, error) {
 	}
 
 	return &Client{
-		httpClient: httpClient,
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		userAgent:  userAgent,
-		hl:         hl,
-		gl:         gl,
+		httpClient:  httpClient,
+		apiKey:      apiKey,
+		baseURL:     baseURL,
+		userAgent:   userAgent,
+		hl:          hl,
+		gl:          gl,
+		cookiesFile: strings.TrimSpace(opts.CookiesFile),
 	}, nil
 }
 
@@ -168,7 +175,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", defaultOrigin)
-	req.Header.Set("Cookie", "SOCS=CAI")
+	req.Header.Set("Cookie", c.cookieHeader())
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Language", c.hl)
 
@@ -199,4 +206,15 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 
 func clientVersion(now time.Time) string {
 	return "1." + now.Format("20060102") + ".01.00"
+}
+
+func (c *Client) cookieHeader() string {
+	if c == nil {
+		return "SOCS=CAI"
+	}
+	h, err := cookies.HeaderFromFile(c.cookiesFile)
+	if err != nil || strings.TrimSpace(h) == "" {
+		return "SOCS=CAI"
+	}
+	return h
 }

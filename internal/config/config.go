@@ -37,6 +37,9 @@ type Config struct {
 	YtdlpPath              string
 	Proxy                  string
 	CookiesFile            string
+	CookiesDir             string
+	CookiesKeepAlive       bool
+	CookiesKeepAliveEvery  time.Duration
 	MaxConcurrentDownloads int
 	MaxFilesizeMB          int
 	DownloadTimeout        time.Duration
@@ -74,6 +77,9 @@ func Load(envFile string) (*Config, error) {
 		YtdlpPath:              l.str("YTDLP_PATH", ""),
 		Proxy:                  l.str("PROXY", ""),
 		CookiesFile:            l.str("COOKIES_FILE", ""),
+		CookiesDir:             l.str("COOKIES_DIR", "cookies"),
+		CookiesKeepAlive:       l.bool("COOKIES_KEEPALIVE", false),
+		CookiesKeepAliveEvery:  l.seconds("COOKIES_KEEPALIVE_INTERVAL_SECONDS", 6*time.Hour),
 		MaxConcurrentDownloads: l.int("MAX_CONCURRENT_DOWNLOADS", 2),
 		MaxFilesizeMB:          l.int("MAX_FILESIZE_MB", 50),
 		DownloadTimeout:        l.seconds("DOWNLOAD_TIMEOUT_SECONDS", 300*time.Second),
@@ -153,11 +159,24 @@ func (c *Config) normalize() error {
 		c.CleanupInterval = 10 * time.Second
 	}
 
+	c.CookiesFile = strings.TrimSpace(c.CookiesFile)
+	c.CookiesDir = strings.TrimSpace(c.CookiesDir)
+	if c.CookiesDir == "" {
+		c.CookiesDir = "cookies"
+	}
+	if c.CookiesKeepAliveEvery < time.Minute {
+		c.CookiesKeepAliveEvery = time.Minute
+	}
+
 	abs, err := filepath.Abs(c.DownloadDir)
 	if err != nil {
 		return fmt.Errorf("DOWNLOAD_DIR 无法解析为绝对路径: %w", err)
 	}
 	c.DownloadDir = abs
+
+	if absDir, err := filepath.Abs(c.CookiesDir); err == nil {
+		c.CookiesDir = absDir
+	}
 	return nil
 }
 
@@ -265,6 +284,22 @@ func (l *loader) str(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func (l *loader) bool(key string, fallback bool) bool {
+	v, ok := l.lookup(key)
+	if !ok {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on", "y":
+		return true
+	case "0", "false", "no", "off", "n":
+		return false
+	default:
+		l.errors = append(l.errors, fmt.Sprintf("%s 必须是布尔值（1/0/true/false），当前 %q", key, v))
+		return fallback
+	}
 }
 
 func (l *loader) int(key string, fallback int) int {
