@@ -1,37 +1,42 @@
 # ytmusic-bridge
 
-YouTube Music 搜索 + 下载 HTTP API，供 bot 调用。**Go 实现，无第三方运行时依赖。**
+面向 bot 的 YouTube Music **搜索 + 下载** HTTP API。**Go 实现，运行时不依赖第三方 Python 包。**
 
-流程：bot 转发模糊歌名 → 本服务搜索并返回候选（默认 10，最大 20）→ bot 用 **序号** 或 **歌单显示全名** 选择 → 本服务下载音频并以二进制（或 JSON + `file_url`）返回。
+典型流程：
 
-> **Bot 开发者请先读 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)**：完整契约、字段语义、错误码、Python/Go/PowerShell 示例与并发行为。
+1. bot 把模糊歌名转发给本服务
+2. 本服务搜索并返回候选（默认 10 条，最多 20 条）
+3. bot 用 **序号** 或 **歌单显示全名** 选定一首
+4. 本服务下载音频，并以二进制（或 JSON + `file_url`）返回
+
+> **Bot 开发者请先读 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)**：完整契约、字段语义、错误码、Python / Go / PowerShell 示例，以及并发行为说明。
 
 ## 技术栈与选型
 
 | 层次 | 选择 | 原因 |
 | --- | --- | --- |
-| 搜索 | 自研 InnerTube `WEB_REMIX` 客户端（Go 标准库） | 只需 `/youtubei/v1/search`；零依赖；协议对照 [`sigma67/ytmusicapi`](https://github.com/sigma67/ytmusicapi)、[`LuanRT/YouTube.js`](https://github.com/LuanRT/YouTube.js) |
-| 下载 | [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) 外部二进制 + ffmpeg | 对 YouTube 变更抗性最强；Go 服务本身不含 Python 依赖 |
-| HTTP | 标准库 `net/http` | 不用 gin/echo；每请求一个 goroutine，天生并发 |
+| 搜索 | 自研 InnerTube `WEB_REMIX` 客户端（Go 标准库） | 只调用 `/youtubei/v1/search`；零依赖；协议对照 [`sigma67/ytmusicapi`](https://github.com/sigma67/ytmusicapi)、[`LuanRT/YouTube.js`](https://github.com/LuanRT/YouTube.js) |
+| 下载 | 外部 [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) + ffmpeg | 对 YouTube 协议变更跟进更快；Go 服务本身不捆绑 Python 依赖 |
+| HTTP | 标准库 `net/http` | 不引入 gin / echo；每个请求一个 goroutine，天然支持并发 |
 
-详细仓库调研见 [`goal-1/plan.md`](goal-1/plan.md) §3。
+更完整的仓库调研见 [`goal-1/plan.md`](goal-1/plan.md) 第 3 节。
 
 ## 依赖（必须拷进本项目）
 
-外部工具请**单独复制/下载到本仓库 `bin/`**，不要挂外部工具目录：
+外部工具请**单独复制或下载到本仓库 `bin/`**，不要挂载外部工具目录：
 
 | 文件 | 获取方式 |
 | --- | --- |
-| `bin/yt-dlp.exe` | `.\scripts\get-ytdlp.ps1`（standalone 构建） |
-| `bin/ffmpeg.exe` | 拷贝 essentials / standalone 到 `bin/` |
-| `bin/ffprobe.exe` | 同上（e2e / 探针用） |
+| `bin/yt-dlp.exe` | 运行 `.\scripts\get-ytdlp.ps1`（下载独立构建版） |
+| `bin/ffmpeg.exe` | 把精简版 / 独立版拷贝到 `bin/` |
+| `bin/ffprobe.exe` | 同上（端到端测试与探针会用到） |
 
-`bin/` 已在 `.gitignore`，不入库。`run.ps1`、服务启动、e2e 均优先使用项目内 `bin/`。
+`bin/` 已写入 `.gitignore`，不会入库。`run.ps1`、服务启动与端到端脚本都会优先使用项目内 `bin/`。
 
-其它：
+其它要求：
 
 - Go 1.26+
-- 可选：复制 `.env.example` → `.env`
+- 可选：复制 `.env.example` 为 `.env`
 - 默认监听 `127.0.0.1:8787`
 
 ## 快速开始
@@ -43,16 +48,16 @@ cd C:\project\test\youtube-music-api
 .\scripts\get-ytdlp.ps1
 # 再把 ffmpeg.exe / ffprobe.exe 拷进 bin/
 
-# 2) 启动（优先 bin/；-Background 不抢焦点）
+# 2) 启动（优先使用 bin/；-Background 后台启动，不抢焦点）
 .\run.ps1
 # 或
 # .\run.ps1 -Background
 
-# 3) healthz
+# 3) 健康检查
 Invoke-RestMethod http://127.0.0.1:8787/healthz
 ```
 
-期望响应（实测）：
+期望响应（实测样例）：
 
 ```json
 {"default_limit":10,"max_limit":20,"status":"ok","version":"0.1.0","ytdlp":"2026.07.04"}
@@ -65,7 +70,7 @@ go build -o bin\ytmusic-bridge.exe .\cmd\ytmusic-bridge
 .\bin\ytmusic-bridge.exe
 ```
 
-## 配置表
+## 配置说明
 
 环境变量优先于 `.env`。完整示例见 [`.env.example`](.env.example)。
 
@@ -74,44 +79,44 @@ go build -o bin\ytmusic-bridge.exe .\cmd\ytmusic-bridge
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `8787` | 监听端口 |
 | `API_KEY` | 空 | 非空时要求请求头 `X-API-Key` |
-| `DEFAULT_LIMIT` | `10` | `/search` 未传 `limit` 时默认条数 |
-| `MAX_LIMIT` | `20` | 硬上限；配置值小于 20 会被抬到 20 |
+| `DEFAULT_LIMIT` | `10` | `/search` 未传 `limit` 时的默认条数 |
+| `MAX_LIMIT` | `20` | 硬上限；配置值小于 20 时会被抬到 20 |
 | `MIN_SCORE` | `0.0` | 服务端默认相似度下限（请求参数可覆盖） |
 | `DOWNLOAD_DIR` | `downloads` | 音频缓存目录 |
-| `AUDIO_FORMAT` | `mp3` | `mp3` / `m4a` / `opus` |
-| `AUDIO_BITRATE` | `192` | kbps |
-| `YTDLP_PATH` | 空 → 自动 `bin/yt-dlp.exe` | yt-dlp 路径 |
-| `FFMPEG_LOCATION` | 空 → 自动 `bin/ffmpeg.exe` 或 `bin/` | ffmpeg 路径或目录 |
+| `AUDIO_FORMAT` | `mp3` | 支持 `mp3` / `m4a` / `opus` |
+| `AUDIO_BITRATE` | `192` | 码率（kbps） |
+| `YTDLP_PATH` | 空 → 自动 `bin/yt-dlp.exe` | yt-dlp 可执行文件路径 |
+| `FFMPEG_LOCATION` | 空 → 自动 `bin/ffmpeg.exe` 或 `bin/` | ffmpeg 可执行文件路径或所在目录 |
 | `PROXY` | 空 | 可选代理 |
-| `COOKIES_FILE` | 空 | 可选 cookies 文件 |
-| `MAX_CONCURRENT_DOWNLOADS` | `2` | yt-dlp 并发上限；超出时**排队** |
-| `MAX_FILESIZE_MB` | `50` | 单文件上限 → `413 FILE_TOO_LARGE` |
-| `DOWNLOAD_TIMEOUT_SECONDS` | `300` | 下载超时 |
-| `SESSION_TTL_SECONDS` | `1800` | 搜索会话 TTL（秒） |
-| `CACHE_TTL_SECONDS` | `86400` | 音频缓存 TTL |
-| `CACHE_MAX_TOTAL_MB` | `2048` | 缓存目录总容量上限 |
-| `CLEANUP_INTERVAL_SECONDS` | `300` | 清理周期 |
-| `SEARCH_TIMEOUT_SECONDS` | `15` | InnerTube 搜索超时 |
+| `COOKIES_FILE` | 空 | 可选 cookies 文件路径 |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | yt-dlp 并发上限；超出后**排队** |
+| `MAX_FILESIZE_MB` | `50` | 单文件上限；超限返回 `413 FILE_TOO_LARGE` |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `300` | 下载超时（秒） |
+| `SESSION_TTL_SECONDS` | `1800` | 搜索会话有效期（秒） |
+| `CACHE_TTL_SECONDS` | `86400` | 音频缓存有效期（秒） |
+| `CACHE_MAX_TOTAL_MB` | `2048` | 缓存目录总容量上限（MB） |
+| `CLEANUP_INTERVAL_SECONDS` | `300` | 后台清理周期（秒） |
+| `SEARCH_TIMEOUT_SECONDS` | `15` | InnerTube 搜索超时（秒） |
 
 ## 接口一览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/healthz` | 健康检查 + 版本 + yt-dlp 版本 |
-| `POST` | `/search` | 模糊搜索 → `session_id` + 候选列表 |
-| `POST` | `/download` | 按 `index` / `name` / `video_id` 下载；默认二进制，`?mode=json` 返回元数据 + `file_url` |
+| `GET` | `/healthz` | 健康检查，返回版本与 yt-dlp 版本 |
+| `POST` | `/search` | 模糊搜索，返回 `session_id` 与候选列表 |
+| `POST` | `/download` | 按 `index` / `name` / `video_id` 下载；默认返回二进制，`?mode=json` 返回元数据与 `file_url` |
 | `GET` | `/file/{token}` | 取回缓存文件（支持 Range） |
 
-### limit 规则
+### `limit` 规则
 
-- 请求里的 `limit` 优先；省略 → `DEFAULT_LIMIT`（10）
-- `limit > MAX_LIMIT`（默认 20）→ **夹紧到 20**（见 `limit_used`）
-- `limit < 1` → `400 INVALID_REQUEST`
-- 实际可返回条数不足时，有多少返回多少，**不是错误**（见 `total`）
+- 请求中的 `limit` 优先；省略时使用 `DEFAULT_LIMIT`（10）
+- `limit > MAX_LIMIT`（默认 20）时，**夹紧到 20**（见响应字段 `limit_used`）
+- `limit < 1` 时返回 `400 INVALID_REQUEST`
+- 实际上游可返回条数不足时，有多少返回多少，**不算错误**（见响应字段 `total`）
 
 ### 错误码
 
-统一 envelope：
+统一错误结构：
 
 ```json
 {"code":"SESSION_EXPIRED","message":"会话已过期，请重新搜索","detail":null}
@@ -122,15 +127,15 @@ go build -o bin\ytmusic-bridge.exe .\cmd\ytmusic-bridge
 | 400 | `INVALID_REQUEST` | 参数错误 |
 | 401 | `UNAUTHORIZED` | API Key 缺失或错误 |
 | 404 | `NOT_FOUND` | index / name / 文件不存在 |
-| 409 | `AMBIGUOUS_NAME` | name 匹配多条 |
+| 409 | `AMBIGUOUS_NAME` | `name` 匹配到多条 |
 | 410 | `SESSION_EXPIRED` | 会话过期 |
 | 413 | `FILE_TOO_LARGE` | 超过 `MAX_FILESIZE_MB` |
 | 499 | `CANCELED` | 客户端取消 |
-| 502 | `UPSTREAM_ERROR` | YouTube / yt-dlp 失败 |
+| 502 | `UPSTREAM_ERROR` | YouTube / yt-dlp 上游失败 |
 | 504 | `TIMEOUT` | 上游超时（含下载排队过久） |
 | 500 | `INTERNAL_ERROR` | 未处理的内部错误 |
 
-> **说明**：下载并发打满时**不会立刻返回 429**。超出 `MAX_CONCURRENT_DOWNLOADS` 的请求会**排队**；排队/下载超时映射为 `504 TIMEOUT`。
+> **说明**：下载并发打满时**不会立刻返回 429**。超出 `MAX_CONCURRENT_DOWNLOADS` 的请求会**排队**；排队或下载超时映射为 `504 TIMEOUT`。
 
 ## PowerShell 示例
 
@@ -185,7 +190,7 @@ Invoke-WebRequest -Uri ($Base + $meta.file_url) -OutFile "out2.mp3"
 }
 ```
 
-`POST /download?mode=json` 样例（冷路径 / 带 session 元数据）：
+`POST /download?mode=json` 样例（冷路径 / 带会话元数据）：
 
 ```json
 {
@@ -202,9 +207,9 @@ Invoke-WebRequest -Uri ($Base + $meta.file_url) -OutFile "out2.mp3"
 }
 ```
 
-注意：若仅用 `video_id` 下载，且缓存条目没有标题元数据，则 `title` / `artists` / `display_name` / `duration_seconds` 可能为空，但 `file_url` / `filesize` / `video_id` 仍可用。
+注意：如果只用 `video_id` 下载，且缓存条目没有标题元数据，则 `title` / `artists` / `display_name` / `duration_seconds` 可能为空；但 `file_url` / `filesize` / `video_id` 仍然可用。
 
-## Python bot 示例
+## Python 示例
 
 ```python
 import json
@@ -240,7 +245,7 @@ with urllib.request.urlopen(BASE + meta["file_url"], timeout=300) as resp:
     open("track.mp3", "wb").write(resp.read())
 ```
 
-## Go bot 示例
+## Go 示例
 
 ```go
 package main
@@ -303,24 +308,24 @@ func main() {
 # 报告：goal-1/e2e-report.json
 ```
 
-本机快照（query 约 `lemon` / `lemon kenshi yonezu`，项目内 `bin/yt-dlp` + `bin/ffmpeg`）：
+本机快照（查询词约 `lemon` / `lemon kenshi yonezu`，使用项目内 `bin/yt-dlp` + `bin/ffmpeg`）：
 
 | 项目 | 结果 |
 | --- | --- |
-| index / name / cache 路径 | 通过（ffprobe 约 192 kbps） |
+| index / name / 缓存路径 | 通过（ffprobe 约 192 kbps） |
 | `/search` 20 并发 × 60 请求 | **QPS ≈ 31.73**，**P50 ≈ 480 ms**，**P99 ≈ 745 ms** |
-| 同曲 20 并发冷下载 | wall ≈ **5159 ms**（约一次下载），随后 `post_cached=true`（singleflight） |
-| 服务 WorkingSet | ≈ **22.7 MB** |
-| healthz | `ytdlp=2026.07.04` |
+| 同曲 20 并发冷下载 | 总耗时约 **5159 ms**（接近一次真实下载），随后 `post_cached=true`（`singleflight` 合并重复下载） |
+| 服务工作集 | 约 **22.7 MB** |
+| 健康检查 | `ytdlp=2026.07.04` |
 
-完整 JSON：[`goal-1/e2e-report.json`](goal-1/e2e-report.json)。本机快照，不是 SLA。
+完整 JSON 见 [`goal-1/e2e-report.json`](goal-1/e2e-report.json)。以上是本机快照，**不是**服务等级承诺。
 
 ## 缓存与并发
 
-- 搜索会话：分片内存 map + TTL（默认 30 分钟）
-- 下载：`singleflight` + 信号量 + 磁盘缓存
-- 缓存命中：`X-Cache: hit`，接近瞬时
-- 后台清理：session TTL + 缓存 TTL/总容量上限
+- 搜索会话：分片内存 map + 过期时间（默认 30 分钟）
+- 下载：`singleflight` 合并重复请求 + 信号量限流 + 磁盘缓存
+- 缓存命中：响应头 `X-Cache: hit`，接近瞬时返回
+- 后台清理：按会话过期时间、缓存过期时间与总容量上限回收
 
 ## 开发检查
 
@@ -333,8 +338,8 @@ $env:YTM_SKIP_LIVE = "1"; go test ./... -count=1
 go test -bench=. ./internal/matching ./internal/session
 ```
 
-## 合规
+## 合规与使用范围
 
-仅供个人学习 / 私有 bot 使用。请遵守 YouTube ToS 与当地版权法。默认只绑定 `127.0.0.1`。
+仅供个人学习或私有 bot 使用。请遵守 YouTube 服务条款与当地版权法。默认只绑定本机 `127.0.0.1`。
 
 任务日志：[`goal-1/tasks.md`](goal-1/tasks.md)。
