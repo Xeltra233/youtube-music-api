@@ -499,7 +499,7 @@ G3?G5 **??**?????????? 1 ?????/???????????????? Task G6 ????
 
 ---
 
-## [ ] Task G7：HTTP API 层（internal/httpapi）
+## [x] Task G7：HTTP API 层（internal/httpapi）
 
 目标：路由 `/healthz`、`POST /search`、`POST /download`（二进制 + `?mode=json`）、`GET /file/{token}`；中间件：panic 恢复、请求日志、可选 `X-API-Key`、请求体大小限制、超时；统一错误 JSON；二进制响应带 `X-Track-*` 头与 `Content-Disposition`；`/file` 支持 Range。
 
@@ -507,6 +507,36 @@ G3?G5 **??**?????????? 1 ?????/???????????????? Task G6 ????
 - `httptest` 全路由测试：正常流、鉴权开关、各错误码（400/401/404/409/410/413）、`mode=json` 与二进制两种响应、Range 请求。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 新增 `internal/httpapi`：
+  - `server.go`：路由装配；`POST /search`（search → session.Put → session_id）；`POST /download`（Select → Download；默认二进制 / `?mode=json`）；`GET /file/{token}`（LookupToken + `http.ServeContent`，支持 Range）；token 先 `ValidateToken` 防穿越。
+  - `errors.go`：统一 `{"code","message","detail"}`；映射 search/session/download 错误到 400/401/404/409/410/413/502/504。
+  - `middleware.go`：panic recover、访问日志、可选 `X-API-Key`、`statusWriter`（保留 Flush/Unwrap）。
+  - `types.go`：bot 契约 DTO（`SearchResponseBody` / `DownloadJSONBody` 等）。
+  - `server_test.go`：16 个 httptest 用例覆盖正常流、鉴权、json/二进制、name 歧义 409、index 404、session 410、413、400、Range、体过大、502。
+- 更新 `cmd/ytmusic-bridge/main.go`：装配 `ytmusic` + `search` + `session` + `download` + `httpapi`。
+
+**验证结果**
+- `gofmt -l .` 无输出；`go vet ./...` / `go build ./...` 通过。
+- `go test ./internal/httpapi -count=1` PASS（16/16）。
+- `go test ./... -count=1` 全绿（含 download live / ytmusic live）。
+- `go test -race ./internal/httpapi -count=1` PASS。
+- 关键路径实测：
+  - `GET /healthz` → 200 + status/version/default_limit/max_limit
+  - `POST /search` → session_id（`s_` 前缀）+ results + expires_in
+  - `POST /download` 二进制 → `audio/mpeg` + `X-Track-Video-Id` + `X-Cache` + `Content-Disposition: filename*`
+  - `POST /download?mode=json` → `file_url=/file/{token}` + filesize/cached
+  - `GET /file/{token}` Range `bytes=0-3` → 206
+  - 错误码：400 INVALID_REQUEST / 401 UNAUTHORIZED / 404 NOT_FOUND / 409 AMBIGUOUS_NAME / 410 SESSION_EXPIRED / 413 FILE_TOO_LARGE / 502 UPSTREAM_ERROR
+
+**剩余风险**
+- `/healthz` 尚未报告 yt-dlp 版本（G8）。
+- 后台 session/cache 清理 goroutine 与启动脚本仍属 G8。
+- 真实 e2e（search→download→ffprobe）与压测属 G9。
+- ServeMux 会把原始 `../` 路径先 307 清洗；已用编码形式 + `ValidateToken` 兜底，G8.5 可再扫一遍。
+
+**下一步**：Task G8 优雅关闭 + 缓存清理 goroutine + 启动脚本 + yt-dlp 引导。
 
 ---
 

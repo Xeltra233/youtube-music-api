@@ -1,9 +1,8 @@
-// Command ytmusic-bridge 提供 YouTube Music 搜索与下载的 HTTP API，供 bot 调用。
+// Command ytmusic-bridge is a YouTube Music search + download HTTP API for bots.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -13,12 +12,17 @@ import (
 	"time"
 
 	"github.com/xeltra/ytmusic-bridge/internal/config"
+	"github.com/xeltra/ytmusic-bridge/internal/download"
+	"github.com/xeltra/ytmusic-bridge/internal/httpapi"
+	"github.com/xeltra/ytmusic-bridge/internal/search"
+	"github.com/xeltra/ytmusic-bridge/internal/session"
 	"github.com/xeltra/ytmusic-bridge/internal/version"
+	"github.com/xeltra/ytmusic-bridge/internal/ytmusic"
 )
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("启动失败: %v", err)
+		log.Fatalf("????: %v", err)
 	}
 }
 
@@ -31,20 +35,35 @@ func run() error {
 		return err
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":        "ok",
-			"version":       version.Version,
-			"default_limit": cfg.DefaultLimit,
-			"max_limit":     cfg.MaxLimit,
-		})
+	ytClient, err := ytmusic.New(ytmusic.Options{
+		Timeout: cfg.SearchTimeout,
+		Proxy:   cfg.Proxy,
 	})
+	if err != nil {
+		return err
+	}
+	searchSvc, err := search.New(ytClient, cfg)
+	if err != nil {
+		return err
+	}
+	sess := session.NewStore(session.Options{TTL: cfg.SessionTTL})
+	dl, err := download.New(cfg, download.Options{})
+	if err != nil {
+		return err
+	}
+	api, err := httpapi.New(httpapi.Options{
+		Config:     cfg,
+		Searcher:   searchSvc,
+		Sessions:   sess,
+		Downloader: dl,
+	})
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           mux,
+		Handler:           api.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -53,7 +72,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("ytmusic-bridge %s 监听 http://%s", version.Version, cfg.Addr())
+		log.Printf("ytmusic-bridge %s ?? http://%s", version.Version, cfg.Addr())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -63,7 +82,7 @@ func run() error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		log.Println("收到退出信号，正在优雅关闭…")
+		log.Println("?????????????")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
