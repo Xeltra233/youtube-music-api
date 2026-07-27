@@ -10,6 +10,8 @@
 
 > 追加需求 R12（2026-07-26，G1 期间）：用户要求先出 bot 接入文档以便并行开发 bot 搜索功能，并追问了并发支持。已交付 `docs/BOT-INTEGRATION.md`（含 §9 多人并发行为）。该文档在 G3–G7 实现完成后需由 Task G10 校订「实现状态」表。
 
+> **文件写入硬约束（2026-07-27，G10 期间，用户强制）**：**必须使用 `apply_patch`**（正确首行 `*** Begin Patch`，禁止 `*** Begin Patch ***`）。禁止 PowerShell/`Set-Content`/Python 控制台写中文文档或源码。外部工具必须拷进本项目 `bin/`。临时编写脚本 task 结束前必须删除。spotube 仅参考。详见 `plan.md` §9 与 `input.md` 追加 4。
+
 ---
 
 ## [x] Task G0：技术栈切换（清理 Python 产物 + Go 选型 + 文档重写）
@@ -683,7 +685,7 @@ What / verification / residual risk / next:
 
 ---
 
-## [ ] Task G10：文档交付（README + bot 接入指南 + 选型说明）
+## [x] Task G10：文档交付（README + bot 接入指南 + 选型说明）
 
 目标：README 覆盖：安装（Go 构建 + yt-dlp 引导）、配置表、启动、全部接口示例（PowerShell + Go/Python bot 示例）、limit 规则、错误码表、性能数据、缓存与合规说明、上游依赖选型结论。
 
@@ -692,6 +694,28 @@ What / verification / residual risk / next:
 独立验证：按 README 从零复现构建 + 启动 + 搜索 + 下载；文档中每条命令实际执行通过。
 
 做了什么 / 验证结果 / 剩余风险 / 下一步：
+
+**做了什么**
+- 按用户硬约束，把 **必须使用 `apply_patch`** 写入 `goal-1/input.md` 追加 4、`goal-1/plan.md` §6/§9、`goal-1/tasks.md` 顶部规则。
+- 用 `apply_patch` 删除并重建完整中文 `README.md`（修复此前控制台写入导致的路径 `\t`/`\r`/`\b` 损坏）；覆盖安装、项目内 `bin/` 依赖、配置表、接口、错误码、PS/Python/Go 示例、G9 性能数据、缓存/合规。
+- 校订 `docs/BOT-INTEGRATION.md`：§0 四接口全部「可用」；实测 JSON；§6 明确超并发排队且不返回 429 `RATE_LIMITED`、超时走 `504 TIMEOUT`；§9.5 填入 G9 数据（QPS≈31.73 / P50≈480ms / P99≈745ms / 冷下载 wall≈5159ms / WorkingSet≈22.7MB / ytdlp=2026.07.04）。
+- 删除临时编写脚本：`_gen_readme.py`、`_probe_gen.py`、`_enc_test.md`。
+- spotube 仅作历史备注，不引入、不继续参考。
+
+**验证结果**
+- README / BOT 文档 UTF-8 中文正常；无路径转义损坏；无残留 `_gen_*` / `_probe_*` 临时文件。
+- `.\run.ps1 -Background` 启动 pid=2536。
+- `GET /healthz` → `status=ok`，`ytdlp=2026.07.04`。
+- `POST /search` query=`lemon kenshi yonezu` limit=3 → total=3，index 1-based，`display_name=Lemon - Kenshi Yonezu`，`video_id=3NNhrqHZqlI`。
+- `POST /download?mode=json` index=1 → `cached=true`，`filesize=6148269`，`file_url` 可取；`GET /file/{token}` 得到 mp3；`ffprobe` duration≈256.1s，bit_rate≈192053。
+- 仅 `video_id` 缓存命中时 JSON 元数据字段可为空：文档已注明。
+
+**剩余风险**
+- yt-dlp 上游偶发失败仍可能导致 live 下载 flake。
+- `bin/` 被 gitignore，新机器需重新准备 `yt-dlp/ffmpeg/ffprobe`。
+- G9 性能数字是本机快照，不是 SLA。
+
+**下一步**：Task G11 最终 review（R1–R12 逐条取证 + 标记 goal 完成）。本轮不进入 G11。
 
 ---
 

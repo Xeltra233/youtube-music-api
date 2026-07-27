@@ -1,7 +1,6 @@
 # bot 接入文档：搜索歌曲 + 下载音频
 
-本文档是 **bot 侧开发的接口契约**。服务端仍在实现中，但下面的请求/响应结构已经定稿，
-可以直接按它写 bot 代码；服务端完工后不会破坏这些字段（只会新增可选字段）。
+本文档是 **bot 侧开发的接口契约**。服务端已实现完整链路；下方请求/响应结构稳定，可直接按它写 bot 代码。后续只可能新增可选字段，不会破坏已列字段。
 
 | 项目 | 值 |
 | --- | --- |
@@ -9,18 +8,18 @@
 | 项目根 | `C:\project\test\youtube-music-api` |
 | 默认地址 | `http://127.0.0.1:8787` |
 | 协议 | HTTP/1.1，JSON（`Content-Type: application/json; charset=utf-8`） |
-| 鉴权 | 可选请求头 `X-API-Key`，服务端 `API_KEY` 为空时不校验 |
+| 鉴权 | 可选请求头 `X-API-Key`；服务端 `API_KEY` 为空时不校验 |
 
 ## 0. 实现状态（写 bot 时先看这里）
 
 | 接口 | 状态 | 说明 |
 | --- | --- | --- |
-| `GET /healthz` | 可用 | 已实现并实测返回 200 |
-| `POST /search` | 契约已定稿，服务端开发中 | 字段不会变，可先按本文档写 bot |
-| `POST /download` | 契约已定稿，服务端开发中 | 同上 |
-| `GET /file/{token}` | 契约已定稿，服务端开发中 | 同上 |
+| `GET /healthz` | **可用** | 已实现；实测返回 200 + yt-dlp 版本 |
+| `POST /search` | **可用** | 已实现；InnerTube 搜索 + `match_score` + session |
+| `POST /download` | **可用** | 已实现；二进制 / `?mode=json` 两种模式 |
+| `GET /file/{token}` | **可用** | 已实现；支持 Range |
 
-bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
+bot 侧只要接 `/search` → `/download` 就是完整链路。
 
 ---
 
@@ -30,9 +29,9 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 用户: /play 晴天 周杰伦
    |
    +--1--> POST /search  {"query":"晴天 周杰伦","limit":10}
-   |       <-- session_id + results[10]（每条带 index、display_name、match_score）
+   |       <-- session_id + results[N]（每条带 index、display_name、match_score）
    |
-   +--2--  bot 渲染成编号列表发给用户，用户回「3」或回歌名全称
+   +--2--  bot 渲染成编号列表发给用户，用户回「3」或回歌曲全名
    |
    +--3--> POST /download {"session_id":"...","index":3}
            <-- 音频二进制（mp3），直接转发给用户
@@ -40,9 +39,9 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 要点：
 
-- **一次搜索 = 一个 `session_id`**，它记住了这次的候选列表。后续选歌靠 `session_id` + `index`/`name`。
+- **一次搜索 = 一个 `session_id`**，它记住这次的候选列表。后续选歌用 `session_id` + `index`/`name`。
 - `session_id` 默认 **30 分钟**过期（响应里的 `expires_in` 是剩余秒数）。过期后再选歌返回 `410`，bot 应提示用户重新搜索。
-- 用户也可以不走 session，直接用 `video_id` 下载（比如 bot 自己做了收藏夹、重播功能）。
+- 用户也可以不走 session，直接用 `video_id` 下载（例如 bot 自己做了收藏夹、重播功能）。
 
 ---
 
@@ -52,16 +51,16 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 ```json
 {
-  "query": "晴天 周杰伦",
-  "limit": 10,
-  "min_score": 0.35
+  "query": "lemon kenshi yonezu",
+  "limit": 3,
+  "min_score": 0.0
 }
 ```
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `query` | string | 是 | — | 模糊歌名，可含歌手。支持中/日/英。首尾空白会去掉，空串返回 `400` |
-| `limit` | int | 否 | `10` | 要几条。**范围 1–20**；传 >20 会被夹到 20（不报错，看 `limit_used`）；传 <1 返回 `400` |
+| `limit` | int | 否 | `10` | 要几条。**范围 1–20**；传 >20 会被截到 20（不报错，看 `limit_used`）；传 <1 返回 `400` |
 | `min_score` | float | 否 | `0.0` | 相似度下限，低于它的结果被丢弃。`0.0` = 不过滤 |
 
 **关于 `limit`**：条数由 bot 决定，服务端只保证「最多支持到 20」。bot 想给用户 5 条就传 5，想给 20 条就传 20。
@@ -69,35 +68,59 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 **关于 `min_score`（重要）**：YouTube Music 上游 **永远不会返回空列表** —— 就算 query 是乱码，
 它也会塞 20 条毫不相关的歌回来（这是实测结论）。所以「搜不到」这个状态需要判断相似度，两种做法：
 
-1. 传 `min_score`（比如 `0.35`），让服务端帮你过滤，`total == 0` 就是「没搜到」；
+1. 传 `min_score`（例如 `0.35`），让服务端帮你过滤；`total == 0` 就是「没搜到」；
 2. 不传，自己看每条的 `match_score`，低于阈值就当没搜到。
 
 推荐做法 1，阈值 `0.3 ~ 0.4` 起步，再按实际效果调。
 
-### 响应 `200`
+### 响应 `200`（实测样例）
 
 ```json
 {
-  "session_id": "s_4f8c1a2b6d7e",
-  "query": "晴天 周杰伦",
-  "limit_requested": 10,
-  "limit_used": 10,
-  "min_score_used": 0.35,
-  "total": 10,
+  "session_id": "s_93595c3f7bdbe33731b8c26b",
+  "query": "lemon kenshi yonezu",
+  "limit_requested": 3,
+  "limit_used": 3,
+  "min_score_used": 0,
+  "total": 3,
   "truncated": true,
   "expires_in": 1800,
   "results": [
     {
       "index": 1,
-      "display_name": "晴天 - 周杰倫",
-      "title": "晴天",
-      "artists": ["周杰倫"],
-      "album": "叶惠美",
-      "duration": "4:30",
-      "duration_seconds": 270,
-      "video_id": "SJKoWAd5ySo",
-      "thumbnail": "https://lh3.googleusercontent.com/...",
-      "match_score": 0.86
+      "display_name": "Lemon - Kenshi Yonezu",
+      "title": "Lemon",
+      "artists": ["Kenshi Yonezu"],
+      "album": "Lemon",
+      "duration": "4:17",
+      "duration_seconds": 257,
+      "video_id": "3NNhrqHZqlI",
+      "thumbnail": "https://yt3.googleusercontent.com/Yiqnzq5SfMrNjf9XTAMCPadMclhC8ltAVaePndf64gdwvjaN6eEDFBw2aKRukpqxlb7rdkb27BdUFLIDfA=w120-h120-l90-rj",
+      "match_score": 1
+    },
+    {
+      "index": 2,
+      "display_name": "Lemon (Kenshi Yonezu 2018) (feat. Fumito Iwai (Galileo Galilei)) - Flower.far",
+      "title": "Lemon (Kenshi Yonezu 2018) (feat. Fumito Iwai (Galileo Galilei))",
+      "artists": ["Flower.far"],
+      "album": "What if…",
+      "duration": "4:47",
+      "duration_seconds": 287,
+      "video_id": "27qbfxakISw",
+      "thumbnail": "https://yt3.googleusercontent.com/rQ53238Rx_FiFyhXOqMyu-gpVKm4MWazwLFdqCd-baYJqrnV-emoePxFPdmxGspLeeNXehuYbZgTQL9B=w120-h120-l90-rj",
+      "match_score": 0.8909090909090909
+    },
+    {
+      "index": 3,
+      "display_name": "LADY - Kenshi Yonezu",
+      "title": "LADY",
+      "artists": ["Kenshi Yonezu"],
+      "album": "LADY",
+      "duration": "3:28",
+      "duration_seconds": 208,
+      "video_id": "zOkIe3RcTCs",
+      "thumbnail": "https://yt3.googleusercontent.com/7e0qJAww69B2DFDDUgFqp59lWMXzuHGS-GG_BFR1sD8rcO80G71aP86hV9NGCqsjx4dMEzO1yxZojAA=w120-h120-l90-rj",
+      "match_score": 0.7894736842105263
     }
   ]
 }
@@ -116,13 +139,13 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `index` | int | **从 1 开始**连续编号。就是发给用户看的序号，用户回「3」就把 `index: 3` 传回来 |
+| `index` | int | **从 1 开始**连续编号。就是发给用户看的序号，用户回「3」就传 `index: 3` 回来 |
 | `display_name` | string | `"标题 - 歌手1, 歌手2"`（无歌手时只有标题）。**用户回歌名时按这个全名匹配** |
 | `title` | string | 纯标题 |
 | `artists` | string[] | 歌手数组，可能是空数组 |
 | `album` | string | 专辑名，可能是 `""` |
-| `duration` | string | `"4:30"` 这种给人看的格式，可能是 `""` |
-| `duration_seconds` | int | 秒数，`0` 表示未知。bot 可用它拦掉过长的曲子 |
+| `duration` | string | `"4:17"` 这种给人看的格式，可能是 `""` |
+| `duration_seconds` | int | 秒数，`0` 表示未知。bot 可用它挡掉过长的曲子 |
 | `video_id` | string | YouTube 视频 ID，全局唯一。**建议 bot 存这个做收藏/去重** |
 | `thumbnail` | string | 封面图 URL，可直接给聊天平台做缩略图 |
 | `match_score` | float | `0.0 ~ 1.0` 相似度，结果已按它降序排列。`1.0` = 与 query 完全一致 |
@@ -137,16 +160,16 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 ```jsonc
 // 方式 A：用户回了序号（最常用）
-{"session_id": "s_4f8c1a2b6d7e", "index": 3}
+{"session_id": "s_93595c3f7bdbe33731b8c26b", "index": 1}
 
 // 方式 B：用户回了歌单上显示的全名
-{"session_id": "s_4f8c1a2b6d7e", "name": "晴天 - 周杰倫"}
+{"session_id": "s_93595c3f7bdbe33731b8c26b", "name": "Lemon - Kenshi Yonezu"}
 
 // 方式 C：跳过 session，直接指定（适合收藏夹/重播）
-{"video_id": "SJKoWAd5ySo"}
+{"video_id": "3NNhrqHZqlI"}
 
 // 方式 D：指定音频格式
-{"video_id": "SJKoWAd5ySo", "format": "m4a"}
+{"video_id": "3NNhrqHZqlI", "format": "m4a"}
 ```
 
 | 字段 | 类型 | 说明 |
@@ -164,16 +187,17 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 | 响应头 | 示例 | 用途 |
 | --- | --- | --- |
 | `Content-Type` | `audio/mpeg` | — |
-| `Content-Length` | `6543210` | 上传前校验大小 |
-| `Content-Disposition` | `attachment; filename*=UTF-8''%E6%99%B4%E5%A4%A9.mp3` | 文件名（UTF-8 编码，中文安全） |
-| `X-Track-Title` | `晴天`（URL 编码） | 发消息时带标题 |
-| `X-Track-Artists` | `周杰倫`（URL 编码） | 发消息时带歌手 |
-| `X-Track-Video-Id` | `SJKoWAd5ySo` | 日志 / 去重 |
-| `X-Track-Duration` | `270` | 秒数 |
+| `Content-Length` | `6148269` | 上传前校验大小 |
+| `Content-Disposition` | `attachment; filename*=UTF-8''Lemon.mp3` | 文件名（UTF-8 编码，中文安全） |
+| `X-Track-Title` | `Lemon`（URL 编码） | 发消息时带标题 |
+| `X-Track-Artists` | `Kenshi%20Yonezu`（URL 编码） | 发消息时带歌手 |
+| `X-Track-Video-Id` | `3NNhrqHZqlI` | 日志 / 去重 |
+| `X-Track-Duration` | `257` | 秒数 |
 | `X-Cache` | `hit` / `miss` | 是否命中服务端缓存 |
 
 > `X-Track-Title` / `X-Track-Artists` 是 URL 编码的（HTTP 头不能直接放非 ASCII），
 > bot 侧要 `urllib.parse.unquote` / `decodeURIComponent` 解一下。
+> 若缓存条目缺少元数据，这两个头可能缺省。
 
 ### 响应（`?mode=json`：先看信息再决定）
 
@@ -181,16 +205,16 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 ```json
 {
-  "title": "晴天",
-  "artists": ["周杰倫"],
-  "display_name": "晴天 - 周杰倫",
-  "video_id": "SJKoWAd5ySo",
-  "duration_seconds": 270,
+  "title": "Lemon",
+  "artists": ["Kenshi Yonezu"],
+  "display_name": "Lemon - Kenshi Yonezu",
+  "video_id": "3NNhrqHZqlI",
+  "duration_seconds": 257,
   "format": "mp3",
-  "filesize": 6543210,
-  "file_url": "/file/9c1d2e3f4a5b6c7d",
-  "expires_in": 86400,
-  "cached": false
+  "filesize": 6148269,
+  "file_url": "/file/2a5367ca562ae7b657b1f1cf33ae4058",
+  "expires_in": 85887,
+  "cached": true
 }
 ```
 
@@ -198,6 +222,8 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 1. bot 有上传体积限制：先看 `filesize`，太大就不下了，改发链接；
 2. bot 想流式上传：拿 `file_url` 去 `GET /file/{token}`（支持 `Range`，可分片）。
+
+**注意**：若只传 `video_id` 且缓存条目没有标题元数据，`title` / `artists` / `display_name` / `duration_seconds` 可能为空，但 `file_url` / `filesize` / `video_id` 仍可用。通过 `session_id+index/name` 走冷下载时，元数据通常完整。
 
 ---
 
@@ -211,11 +237,13 @@ bot 侧只要接 `/search`（§2）+ `/download`（§3）就是完整链路。
 
 ## 5. `GET /healthz` 探活
 
+实测：
+
 ```json
 {"status":"ok","version":"0.1.0","default_limit":10,"max_limit":20,"ytdlp":"2026.07.04"}
 ```
 
-bot 启动时先打这个，确认桥接服务活着。
+bot 启动时先打这个，确认对接服务活着，并确认 `ytdlp` 字段非空。
 
 ---
 
@@ -227,7 +255,7 @@ bot 启动时先打这个，确认桥接服务活着。
 {"code": "SESSION_EXPIRED", "message": "会话已过期，请重新搜索", "detail": null}
 ```
 
-| HTTP | `code` | 含义 | bot 该怎么办 |
+| HTTP | `code` | 含义 | bot 该怎么做 |
 | --- | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | 参数非法（空 query、`limit<1`、没给任何选歌方式） | 提示用法，别重试 |
 | 401 | `UNAUTHORIZED` | `X-API-Key` 缺失或错误 | 查 bot 配置 |
@@ -235,11 +263,14 @@ bot 启动时先打这个，确认桥接服务活着。
 | 409 | `AMBIGUOUS_NAME` | `name` 命中多条同名 | `detail` 里有候选清单，让用户改用序号 |
 | 410 | `SESSION_EXPIRED` | `session_id` 过期 | 提示重新搜索 |
 | 413 | `FILE_TOO_LARGE` | 超过服务端 `MAX_FILESIZE_MB` | 提示曲子太大，或改发链接 |
-| 429 | `RATE_LIMITED` | 并发下载已满 | 指数退避后重试 |
+| 499 | `CANCELED` | 客户端取消 | 一般忽略 |
 | 502 | `UPSTREAM_ERROR` | YouTube 侧失败 / 解析失败 | 可重试一次，仍失败就报错给用户 |
-| 504 | `TIMEOUT` | 上游超时 | 同上 |
+| 504 | `TIMEOUT` | 上游超时（含下载排队过久） | 同上 |
+| 500 | `INTERNAL_ERROR` | 未分类内部错误 | 记日志，提示稍后重试 |
 
-**最小容错建议**：`502` / `504` / `429` 重试一次；`4xx` 一律不重试，直接把 `message` 展示给用户。
+**关于并发限流**：超出 `MAX_CONCURRENT_DOWNLOADS` 时，服务端会**排队等待**，**不会立刻返回 429 `RATE_LIMITED`**。排队/下载超时映射为 `504 TIMEOUT`。bot 侧仍应对 `502` / `504` 做有限重试。
+
+**最小容错建议**：`502` / `504` 重试一次；`4xx` 一律不重试，直接把 `message` 展示给用户。
 
 ---
 
@@ -270,14 +301,13 @@ bot 启动时先打这个，确认桥接服务活着。
 - **不会**删除或重命名本文档已列出的字段；
 - **不会**改变 `index` 的 1-based 语义、`display_name` 的 `"标题 - 歌手"` 格式；
 - **不会**改变已列出的 HTTP 状态码与 `code` 取值；
-- 只可能**新增可选字段** —— bot 侧解析 JSON 时请忽略未知字段（Python / Go 默认行为即可）。
+- 只可能 **新增可选字段** —— bot 侧解析 JSON 时请忽略未知字段（Python / Go 默认行为即可）。
 
 ---
 
 ## 9. 多人同时使用（并发行为）
 
-服务端是 Go 原生 `net/http`，**每个请求一个 goroutine**，天生并发。多个用户互不阻塞。
-两条链路的并发特性不一样，bot 侧要区别对待：
+服务端是 Go 原生 `net/http`，**每个请求一个 goroutine**，天生并发。多个用户互不阻塞。两条链路的并发特性不一样，bot 侧要区别对待。
 
 ### 9.1 搜索：几乎无上限
 
@@ -285,9 +315,9 @@ bot 启动时先打这个，确认桥接服务活着。
 
 - 所有 `/search` 共用一个 `http.Client`（keep-alive 连接池复用），不会每次新建连接；
 - 打分是纯 CPU 计算，20 条数据微秒级；
-- session 存储用**分片 map**（按 `session_id` 哈希分到多个桶，各桶独立加锁），多人同时搜索不会抢同一把锁。
+- session 存储用 **分片 map**（按 `session_id` 哈希分到多个桶，各桶独立加锁），多人同时搜索不会抢同一把锁。
 
-**结论**：十几个人同时搜索完全没问题，瓶颈是 YouTube 侧的响应时间（实测单次约 1.2s），不是本服务。
+**结论**：十来个人同时搜索完全没问题，瓶颈是 YouTube 侧的响应时间（实测单次约 0.5–1.2s），不是本服务。
 
 ### 9.2 下载：有意限流，会排队
 
@@ -303,7 +333,7 @@ bot 启动时先打这个，确认桥接服务活着。
 
 - **点同一首歌** → 第一个人触发下载，其余人等同一个结果，几乎同时拿到；之后所有人都是缓存命中，秒回。
 - **点不同的歌** → 按 `MAX_CONCURRENT_DOWNLOADS` 排队。默认 2 意味着第 3 个人要等前面的下完（单曲实测 4~6s）。
-- **排队太久** → 请求可能超时，或返回 `429 RATE_LIMITED`。bot 侧应指数退避重试。
+- **排队太久** → 请求可能超时，返回 `504 TIMEOUT`（**不是 429**）。bot 侧应有限重试。
 
 ### 9.3 多人使用时的配置建议
 
@@ -313,7 +343,7 @@ bot 启动时先打这个，确认桥接服务活着。
 # 几个人用：默认值够了
 MAX_CONCURRENT_DOWNLOADS=2
 
-# 十几人同时用：调高，注意每个 yt-dlp+ffmpeg 约吃 1 个核
+# 十来人同时用：调高，注意每个 yt-dlp+ffmpeg 约吃 1 个核
 MAX_CONCURRENT_DOWNLOADS=4
 
 # 缓存给足，多人点热门歌时命中率就是性能
@@ -330,15 +360,88 @@ CACHE_MAX_TOTAL_MB=4096
    A 回「3」就点到 B 的歌。建议用 `dict[(chat_id, user_id)] -> session_id`。
 2. **给每个用户加下载并发限制**。比如同一用户同时最多 1 个下载任务，
    防止一个人连点 20 次把队列占满、其他人全在排队。
-3. **下载超时给足**（建议 300s）。排队 + 下载 + 转码叠加起来可能到几十秒，
+3. **下载超时给足**（建议 300s）。排队 + 下载 + 转码加起来可能到几十秒；
    超时设太短会出现「服务端下完了但 bot 已经放弃」的浪费。
 
-### 9.5 实现状态
+### 9.5 实测并发数据（G9）
 
-| 能力 | 状态 |
+| 能力 | 状态 / 数据 |
 | --- | --- |
-| 每请求独立 goroutine（`net/http`） | 已具备（框架特性） |
-| 分片 map session 存储 | 设计已定稿，Task G5 实现，将用 `go test -race` 验证 |
-| singleflight 同曲去重 | 设计已定稿，Task G6 实现，将用「10 并发同曲只执行 1 次 yt-dlp」验证 |
-| 并发信号量限流 | 设计已定稿，Task G6 实现 |
-| 并发压测数据（QPS / P99） | Task G9 产出，届时补进本节 |
+| 每请求独立 goroutine（`net/http`） | **可用**（框架特性） |
+| 分片 map session 存储 | **可用**；`go test -race` 通过 |
+| singleflight 同曲去重 | **可用**；同曲 20 并发冷下载 wall ≈ **5159 ms**（约一次下载），随后 `post_cached=true` |
+| 并发信号量限流 | **可用**；超出排队，超时 → `504 TIMEOUT` |
+| `/search` 压测 | 20 并发 × 60 请求：**QPS ≈ 31.73**，**P50 ≈ 480 ms**，**P99 ≈ 745 ms**，成功 60/60 |
+| 服务内存 | WorkingSet ≈ **22.7 MB** |
+| 工具版本 | healthz `ytdlp=2026.07.04`（项目内 `bin/yt-dlp.exe`） |
+
+完整报告：[`goal-1/e2e-report.json`](../goal-1/e2e-report.json)。以上是本机快照，不是 SLA；上游 InnerTube / yt-dlp 抖动会导致波动。
+
+---
+
+## 10. 示例代码
+
+### PowerShell
+
+```powershell
+$Base = "http://127.0.0.1:8787"
+
+$search = Invoke-RestMethod -Method Post -Uri "$Base/search" `
+  -ContentType "application/json; charset=utf-8" `
+  -Body (@{ query = "lemon kenshi yonezu"; limit = 3 } | ConvertTo-Json)
+
+$search.results | ForEach-Object {
+  "{0}. {1}  ({2})  score={3:N2}" -f $_.index, $_.display_name, $_.duration, $_.match_score
+}
+
+$dl = @{ session_id = $search.session_id; index = 1 } | ConvertTo-Json
+Invoke-WebRequest -Method Post -Uri "$Base/download" `
+  -ContentType "application/json; charset=utf-8" -Body $dl -OutFile "out.mp3"
+```
+
+### Python
+
+```python
+import json
+import urllib.parse
+import urllib.request
+
+BASE = "http://127.0.0.1:8787"
+
+def post_json(path, payload, query=""):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        BASE + path + query,
+        data=data,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        ctype = resp.headers.get("Content-Type", "")
+        body = resp.read()
+        if "application/json" in ctype:
+            return json.loads(body.decode("utf-8")), resp.headers
+        return body, resp.headers
+
+search, _ = post_json("/search", {"query": "lemon kenshi yonezu", "limit": 5, "min_score": 0.35})
+for item in search["results"]:
+    print(f'{item["index"]}. {item["display_name"]} ({item["duration"]})')
+
+audio, headers = post_json("/download", {"session_id": search["session_id"], "index": 1})
+title = urllib.parse.unquote(headers.get("X-Track-Title", ""))
+print("got", len(audio), "bytes, title=", title)
+open("track.mp3", "wb").write(audio)
+```
+
+### Go
+
+见仓库根目录 [`README.md`](../README.md) 中的 Go bot 示例。
+
+---
+
+## 11. 依赖与部署提示
+
+- 外部工具必须放在**本项目** `bin/`：`yt-dlp.exe`、`ffmpeg.exe`、`ffprobe.exe`。不要挂外部工具目录。
+- `.\scripts\get-ytdlp.ps1` 下载 yt-dlp；ffmpeg/ffprobe 自行拷贝 standalone/essentials 到 `bin/`。
+- `.\run.ps1` / `.\run.ps1 -Background` 启动服务（优先 `bin/`）。
+- 完整安装与配置表见 [`README.md`](../README.md)。

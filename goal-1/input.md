@@ -30,3 +30,20 @@
 > 所有的文件都放这里
 
 影响：项目根目录从 `C:\Users\Xeltra\Desktop\ytmusic-bridge` 迁移到 `C:\project\test\youtube-music-api`（含 `.git`、`goal-1`、Go 源码），旧目录已删除。后续所有文件只允许创建在新根目录下。plan.md §2 / §8 的路径记录需同步。
+
+### 追加 4（2026-07-27，Task G10 执行中）
+
+> ？你在干嘛，如果你要用，请你单独拷贝一份进来，因为这是个完整项目
+> 可以参考这个项目https://github.com/krtirtho/spotube
+> 而且你为什么老用控制台写东西，用apply_patch不行吗
+> 你记得把你为了编写而编写的脚本删除
+>
+> 去你妈的你必须给我用apply_patch那是你的用法不对导致的
+>
+> 你把apply_patch必须使用写进goal文档，每次捣腾其他方法还搞不好
+
+影响与硬约束：
+1. **写文件必须使用 `apply_patch`**（正确首行是 `*** Begin Patch`，禁止 `*** Begin Patch ***`）。禁止用 PowerShell/`Set-Content`/Python/`Out-File` 等控制台方式直接写中文文档或源码；此前误用导致编码与路径转义损坏。
+2. 外部依赖（yt-dlp / ffmpeg / ffprobe）必须**单独拷贝进本项目** `bin/`，禁止挂外部工具目录；spotube 仅作交互参考，不改变本服务架构、不引入其运行时依赖。
+3. 为编写而临时创建的脚本/探针文件（如 `_gen_*.py`、`_probe_*.py`、`_enc_test.md`）必须在 task 结束前删除。
+4. 本约束同步写入 `plan.md` / `tasks.md`，后续 task 一律遵守。

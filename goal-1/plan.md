@@ -139,6 +139,7 @@ internal/apitypes/types.go      # 请求响应结构体（bot 消费的 JSON 契
 8. 直连可用，`PROXY` 仅作可选逃生口。
 9. 不做 bot 本体，只交付 API + bot 接入示例。
 10. `min_score` 默认 0.0（不过滤），阈值决策权归 bot。
+11. **写文件强制 `apply_patch`**（正确首行 `*** Begin Patch`）。禁止 PowerShell/Python 控制台直接写中文文档或源码；临时编写脚本必须删除。外部工具必须拷进项目 `bin/`；spotube 仅参考。
 
 ## 7. 验证方式
 
@@ -155,3 +156,11 @@ internal/apitypes/types.go      # 请求响应结构体（bot 消费的 JSON 契
 - Go 依赖记录在 `go.mod`/`go.sum`，不改全局环境（无 CGO、不装系统包）。
 - yt-dlp 若由脚本下载，落在项目 `bin/`，删除即回滚。
 - 不触碰生产配置、密钥、系统网络设置。
+
+## 9. 文件写入硬约束（2026-07-27，用户追加）
+
+- **必须使用 `apply_patch` 创建/修改文本文件**；正确格式首行是 `*** Begin Patch`（不是 `*** Begin Patch ***`）。
+- 禁止用控制台管道、`Set-Content`、`Out-File`、Python `write_text` 等方式写中文文档；这些方式在本环境易把路径转义/`\t`/`\r` 写坏，或把中文变成 `?`。
+- 外部依赖（yt-dlp / ffmpeg / ffprobe）必须拷贝到本仓库 `bin/`，禁止挂外部工具目录。
+- 参考 [spotube](https://github.com/krtirtho/spotube) 仅限产品交互，不引入其代码/运行时。
+- 为编写而写的临时脚本（`_gen_*.py` / `_probe_*.py` / `_enc_*.md` 等）task 结束前必须删除。
