@@ -132,6 +132,10 @@ func YtdlpVersion(ctx context.Context, path string) (string, error) {
 }
 
 func buildYtdlpArgs(opt YtdlpOptions) []string {
+	return buildYtdlpArgsWithExtra(opt, nil)
+}
+
+func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 	// 输出模板指向最终路径，但我们会先写到临时文件再 rename；
 	// 这里 OutputPath 已是 temp 路径。
 	args := []string{
@@ -148,6 +152,14 @@ func buildYtdlpArgs(opt YtdlpOptions) []string {
 		"--no-write-info-json",
 		"--no-write-thumbnail",
 		"--no-mtime",
+		// 下载稳定性：让 yt-dlp 自己先重试分片/瞬时网络错误
+		"--retries", "5",
+		"--fragment-retries", "5",
+		"--retry-sleep", "linear=1::2",
+		"--socket-timeout", "20",
+		"--geo-bypass",
+		"--no-cache-dir",
+		"--prefer-ffmpeg",
 	}
 	if opt.FFmpegLocation != "" {
 		args = append(args, "--ffmpeg-location", opt.FFmpegLocation)
@@ -162,7 +174,11 @@ func buildYtdlpArgs(opt YtdlpOptions) []string {
 		// yt-dlp 的 max-filesize 在下载阶段生效；转码后还会再检查一次。
 		args = append(args, "--max-filesize", fmt.Sprintf("%d", opt.MaxFilesize))
 	}
-	// 稳定的音频选择：优先 m4a/webm 音频流
+	// 额外策略参数（player_client 等）放在 -f 之前。
+	if len(extra) > 0 {
+		args = append(args, extra...)
+	}
+	// 稳定的音频选择：优先纯音频流，再回退 best。
 	args = append(args, "-f", "bestaudio/best")
 	args = append(args, "--", opt.URL)
 	return args
@@ -176,26 +192,136 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 	if err != nil {
 		return err
 	}
-	args := buildYtdlpArgs(opt)
-	stdout, stderr, err := runner.Run(ctx, path, args, nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// 多 player client 回退：YouTube 经常对单一客户端抽风/风控，
+	// android/ios 通常比纯 web 更稳，且少依赖 JS runtime。
+	strategies := []struct {
+		name  string
+		extra []string
+	}{
+		{name: "android+ios+mweb", extra: []string{"--extractor-args", "youtube:player_client=android,ios,mweb"}},
+		{name: "android", extra: []string{"--extractor-args", "youtube:player_client=android"}},
+		{name: "tv+web", extra: []string{"--extractor-args", "youtube:player_client=tv_embedded,web"}},
+		{name: "default", extra: nil},
+	}
+
+	var last error
+	for i, st := range strategies {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("download: yt-dlp canceled: %w", err)
+		}
+		if i > 0 {
+			// 策略间短退避，避免连续打同一风控。
+			delay := time.Duration(i) * 700 * time.Millisecond
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("download: yt-dlp canceled: %w", ctx.Err())
+			case <-timer.C:
+			}
+		}
+
+		args := buildYtdlpArgsWithExtra(opt, st.extra)
+		stdout, stderr, err := runner.Run(ctx, path, args, nil)
+		if err == nil {
+			return nil
+		}
+		// context 取消/超时优先
+		if ctx.Err() != nil {
+			return fmt.Errorf("download: yt-dlp canceled: %w", ctx.Err())
+		}
+		exitCode := -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			exitCode = ee.ExitCode()
+		}
+		execErr := &ExecError{
+			ExitCode: exitCode,
+			Stderr:   stderr,
+			Stdout:   stdout,
+			Cmd:      path + " " + strings.Join(args, " "),
+			Strategy: st.name,
+		}
+		last = execErr
+		if !isTransientYtdlpError(execErr) {
+			return execErr
+		}
+	}
+	if last == nil {
+		return fmt.Errorf("download: yt-dlp failed with no attempts")
+	}
+	return last
+}
+
+// isTransientYtdlpError 判断是否值得换 player client / 再试一次。
+func isTransientYtdlpError(err error) bool {
 	if err == nil {
-		return nil
+		return false
 	}
-	exitCode := -1
-	var ee *exec.ExitError
+	var ee *ExecError
+	msg := err.Error()
 	if errors.As(err, &ee) {
-		exitCode = ee.ExitCode()
+		msg = ee.Stderr + "\n" + ee.Stdout + "\n" + ee.Error()
 	}
-	// context 取消/超时优先
-	if ctx.Err() != nil {
-		return fmt.Errorf("download: yt-dlp canceled: %w", ctx.Err())
+	low := strings.ToLower(msg)
+
+	// 注意：有些 "not available" 其实换 client 能好；因此 permanent 只保留更硬的信号。
+	hardPermanent := []string{
+		"private video",
+		"copyright",
+		"account associated with this video has been terminated",
+		"join this channel to get access",
+		"file is larger than max-filesize",
 	}
-	return &ExecError{
-		ExitCode: exitCode,
-		Stderr:   stderr,
-		Stdout:   stdout,
-		Cmd:      path + " " + strings.Join(args, " "),
+	for _, p := range hardPermanent {
+		if strings.Contains(low, p) {
+			return false
+		}
 	}
+
+	transient := []string{
+		"http error 403",
+		"http error 429",
+		"http error 5",
+		"too many requests",
+		"timed out",
+		"timeout",
+		"temporar",
+		"connection reset",
+		"connection refused",
+		"network is unreachable",
+		"tls",
+		"ssl",
+		"eof",
+		"fragment",
+		"unable to download",
+		"failed to extract",
+		"failed to download",
+		"no video formats",
+		"requested format is not available",
+		"sign in to confirm",
+		"confirm you're not a bot",
+		"this video is not available",
+		"the page needs to be reloaded",
+		"sabr",
+		"po token",
+		"only images are available",
+		"js challenge",
+		"ffmpeg",
+		"postprocessing",
+		"fake ytdlp failed", // 单测瞬时失败文案
+	}
+	for _, t := range transient {
+		if strings.Contains(low, t) {
+			return true
+		}
+	}
+	// 未知错误：保守重试，换 client 成本可接受。
+	return true
 }
 
 // findProducedFile 在 temp 输出旁寻找 yt-dlp 实际写出的文件。

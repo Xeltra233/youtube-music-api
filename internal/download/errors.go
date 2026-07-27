@@ -90,6 +90,7 @@ type ExecError struct {
 	Stderr   string
 	Stdout   string
 	Cmd      string
+	Strategy string
 }
 
 func (e *ExecError) Error() string {
@@ -101,10 +102,14 @@ func (e *ExecError) Error() string {
 	if len(msg) > 800 {
 		msg = msg[:800] + "..."
 	}
-	if msg == "" {
-		return fmt.Sprintf("download: yt-dlp failed (exit=%d)", e.ExitCode)
+	prefix := "download: yt-dlp failed"
+	if e != nil && e.Strategy != "" {
+		prefix = fmt.Sprintf("download: yt-dlp failed (strategy=%s)", e.Strategy)
 	}
-	return fmt.Sprintf("download: yt-dlp failed (exit=%d): %s", e.ExitCode, msg)
+	if msg == "" {
+		return fmt.Sprintf("%s (exit=%d)", prefix, e.ExitCode)
+	}
+	return fmt.Sprintf("%s (exit=%d): %s", prefix, e.ExitCode, msg)
 }
 
 func (e *ExecError) Is(target error) bool {

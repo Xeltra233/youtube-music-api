@@ -329,6 +329,13 @@ func main() {
 - 缓存命中：响应头 `X-Cache: hit`，接近瞬时返回
 - 后台清理：按会话过期时间、缓存过期时间与总容量上限回收
 
+## 下载稳定性
+
+- `/search` 成功不代表 `/download` 一定立刻成功（搜索与拉流是两条上游链路）
+- 下载失败时服务端会自动切换多个 YouTube player client，并带分片/网络重试
+- 仍失败时返回 `502 UPSTREAM_ERROR`（message 含「已自动重试」与 yt-dlp 摘要）
+- 公网机器若持续失败，优先检查出口网络、可选 `PROXY` / `COOKIES_FILE`，并保持镜像内 yt-dlp 为新版本
+
 ## 开发检查
 
 ```powershell

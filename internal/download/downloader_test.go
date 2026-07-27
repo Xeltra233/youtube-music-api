@@ -42,6 +42,8 @@ type fakeRunner struct {
 	writeSize int
 	fail      bool
 	failMsg   string
+	// failTimes > 0 时：前 N 次失败，之后成功（用于重试测试）。
+	failTimes int
 	// onCall 可选钩子
 	onCall func(name string, args []string)
 }
@@ -54,6 +56,7 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, env []
 	size := f.writeSize
 	fail := f.fail
 	failMsg := f.failMsg
+	failTimes := f.failTimes
 	onCall := f.onCall
 	f.mu.Unlock()
 
@@ -67,7 +70,7 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, env []
 		case <-time.After(delay):
 		}
 	}
-	if fail {
+	if fail || (failTimes > 0 && calls <= failTimes) {
 		msg := failMsg
 		if msg == "" {
 			msg = "fake ytdlp failed"
@@ -338,6 +341,70 @@ func TestDownloadExecFailureReadable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Video unavailable") {
 		t.Fatalf("error should include stderr: %v", err)
+	}
+}
+
+func TestDownloadRetriesTransientThenSucceeds(t *testing.T) {
+	cfg := testConfig(t)
+	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
+	if err := os.WriteFile(fakeBin, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.YtdlpPath = fakeBin
+	cfg.DownloadTimeout = 20 * time.Second
+
+	fake := &fakeRunner{
+		writeSize: 2048,
+		failTimes: 2,
+		failMsg:   "HTTP Error 403: Forbidden",
+	}
+	d, err := New(cfg, Options{Runner: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Download(context.Background(), Request{VideoID: "3NNhrqHZqlI", Title: "Lemon"})
+	if err != nil {
+		t.Fatalf("expected retry success, got %v", err)
+	}
+	if res == nil || res.Size <= 0 {
+		t.Fatalf("bad result: %+v", res)
+	}
+	if fake.callCount() < 3 {
+		t.Fatalf("expected at least 3 strategy attempts, got %d", fake.callCount())
+	}
+}
+
+func TestDownloadHardPermanentDoesNotSpinAllStrategies(t *testing.T) {
+	cfg := testConfig(t)
+	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
+	if err := os.WriteFile(fakeBin, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.YtdlpPath = fakeBin
+
+	fake := &fakeRunner{
+		fail:    true,
+		failMsg: "Private video. Sign in if you've been granted access",
+	}
+	d, err := New(cfg, Options{Runner: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.Download(context.Background(), Request{VideoID: "3NNhrqHZqlI"})
+	if !errors.Is(err, ErrExecFailed) {
+		t.Fatalf("want ErrExecFailed, got %v", err)
+	}
+	if fake.callCount() != 1 {
+		t.Fatalf("private video should fail fast, attempts=%d", fake.callCount())
+	}
+}
+
+func TestIsTransientYtdlpError(t *testing.T) {
+	if !isTransientYtdlpError(&ExecError{Stderr: "HTTP Error 403: Forbidden"}) {
+		t.Fatal("403 should be transient")
+	}
+	if isTransientYtdlpError(&ExecError{Stderr: "Private video"}) {
+		t.Fatal("private should be permanent")
 	}
 }
 
