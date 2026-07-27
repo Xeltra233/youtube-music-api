@@ -26,8 +26,8 @@ func lemonItems() []search.Item {
 			Artists: []string{"Kenshi Yonezu"}, VideoID: "lemon1", MatchScore: 0.95,
 		},
 		{
-			Index: 2, DisplayName: "?? - ???", Title: "??",
-			Artists: []string{"???"}, VideoID: "qt1", MatchScore: 0.9,
+			Index: 2, DisplayName: "晴天 - 周杰伦", Title: "晴天",
+			Artists: []string{"周杰伦"}, VideoID: "qt1", MatchScore: 0.9,
 		},
 		{
 			Index: 3, DisplayName: "Lemon Tree - Fools Garden", Title: "Lemon Tree",
@@ -103,7 +103,7 @@ func TestSelectExactName(t *testing.T) {
 	id := putSample(t, store, lemonItems())
 	sel, err := store.Select(SelectRequest{
 		SessionID: id,
-		Name:      "?? - ???",
+		Name:      "晴天 - 周杰伦",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestSelectAmbiguousNormalizedName(t *testing.T) {
 func TestSelectNameNotFound(t *testing.T) {
 	store := NewStore(Options{TTL: time.Minute})
 	id := putSample(t, store, lemonItems())
-	_, err := store.Select(SelectRequest{SessionID: id, Name: "????????XYZXYZ"})
+	_, err := store.Select(SelectRequest{SessionID: id, Name: "不存在的歌名XYZXYZ"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err=%v want ErrNotFound", err)
 	}
@@ -306,7 +306,7 @@ func TestSelectVideoIDTrimSpace(t *testing.T) {
 func TestSelectIndexZeroFallsBackToName(t *testing.T) {
 	store := NewStore(Options{TTL: time.Minute})
 	id := putSample(t, store, lemonItems())
-	sel, err := store.Select(SelectRequest{SessionID: id, Index: 0, Name: "?? - ???"})
+	sel, err := store.Select(SelectRequest{SessionID: id, Index: 0, Name: "晴天 - 周杰伦"})
 	if err != nil {
 		t.Fatal(err)
 	}

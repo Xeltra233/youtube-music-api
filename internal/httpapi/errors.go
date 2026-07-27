@@ -40,21 +40,21 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 
 	// context timeout / cancel
 	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusGatewayTimeout, "TIMEOUT", "????", nil)
+		writeError(w, http.StatusGatewayTimeout, "TIMEOUT", "上游超时", nil)
 		return
 	}
 	if errors.Is(err, context.Canceled) {
-		writeError(w, 499, "CANCELED", "?????", nil)
+		writeError(w, 499, "CANCELED", "请求已取消", nil)
 		return
 	}
 
 	// search
 	if errors.Is(err, search.ErrEmptyQuery) {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "query ????", nil)
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "query 不能为空", nil)
 		return
 	}
 	if errors.Is(err, search.ErrInvalidLimit) {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit ?? >= 1", nil)
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit 必须 >= 1", nil)
 		return
 	}
 
@@ -65,11 +65,11 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 			"name":       amb.Name,
 			"candidates": itemsToAPI(amb.Candidates),
 		}
-		writeError(w, http.StatusConflict, "AMBIGUOUS_NAME", "???????????????", detail)
+		writeError(w, http.StatusConflict, "AMBIGUOUS_NAME", "歌名匹配到多条结果，请改用序号", detail)
 		return
 	}
 	if errors.Is(err, session.ErrGone) {
-		writeError(w, http.StatusGone, "SESSION_EXPIRED", "???????????", nil)
+		writeError(w, http.StatusGone, "SESSION_EXPIRED", "会话已过期，请重新搜索", nil)
 		return
 	}
 	if errors.Is(err, session.ErrNotFound) {
@@ -93,7 +93,7 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 				"format":    tooLarge.Format,
 			}
 		}
-		writeError(w, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "?????????????", detail)
+		writeError(w, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "文件超过大小限制", detail)
 		return
 	}
 	if errors.Is(err, download.ErrYtdlpMissing) {
@@ -101,11 +101,11 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, download.ErrExecFailed) {
-		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "????: "+trimErr(err), nil)
+		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "下载失败: "+trimErr(err), nil)
 		return
 	}
 	if errors.Is(err, download.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "?????????", nil)
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "文件不存在或已过期", nil)
 		return
 	}
 	if errors.Is(err, download.ErrBadRequest) {
@@ -116,12 +116,12 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 	// best-effort upstream detection
 	msg := err.Error()
 	if strings.Contains(msg, "upstream") || strings.Contains(msg, "ytmusic") {
-		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "??????", map[string]string{"error": trimErr(err)})
+		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "上游服务失败", map[string]string{"error": trimErr(err)})
 		return
 	}
 
 	log.Printf("httpapi: unhandled error: %v", err)
-	writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "???????", nil)
+	writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "内部错误", nil)
 }
 
 func humanSessionNotFound(err error) string {
@@ -129,14 +129,14 @@ func humanSessionNotFound(err error) string {
 	if errors.As(err, &nf) && nf.Reason != "" {
 		switch {
 		case strings.Contains(nf.Reason, "index"):
-			return "?????"
+			return "序号不存在"
 		case strings.Contains(nf.Reason, "name"):
-			return "????????"
+			return "未匹配到该歌名"
 		case strings.Contains(nf.Reason, "session"):
-			return "?????"
+			return "会话不存在"
 		}
 	}
-	return "???"
+	return "未找到"
 }
 
 func humanSessionBadRequest(err error) string {
@@ -144,7 +144,7 @@ func humanSessionBadRequest(err error) string {
 	if errors.As(err, &br) && br.Reason != "" {
 		return br.Reason
 	}
-	return "??????"
+	return "请求参数非法"
 }
 
 func trimErr(err error) string {

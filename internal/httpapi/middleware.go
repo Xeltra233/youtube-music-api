@@ -54,7 +54,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				log.Printf("panic: %v\n%s", rec, debug.Stack())
 				if sw.status == 0 {
-					writeError(sw, http.StatusInternalServerError, "INTERNAL_ERROR", "???????", nil)
+					writeError(sw, http.StatusInternalServerError, "INTERNAL_ERROR", "内部错误", nil)
 				}
 			}
 			status := sw.status
@@ -68,7 +68,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		if key := strings.TrimSpace(s.apiKey); key != "" {
 			got := strings.TrimSpace(r.Header.Get("X-API-Key"))
 			if got == "" || got != key {
-				writeError(sw, http.StatusUnauthorized, "UNAUTHORIZED", "?????? X-API-Key", nil)
+				writeError(sw, http.StatusUnauthorized, "UNAUTHORIZED", "缺少或错误的 X-API-Key", nil)
 				return
 			}
 		}

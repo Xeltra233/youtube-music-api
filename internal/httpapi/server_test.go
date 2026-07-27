@@ -108,8 +108,8 @@ func sampleItems() []search.Item {
 			Thumbnail: "https://example.com/a.jpg", MatchScore: 1.0,
 		},
 		{
-			Index: 2, DisplayName: "?? - ???", Title: "??",
-			Artists: []string{"???"}, Album: "???",
+			Index: 2, DisplayName: "晴天 - 周杰伦", Title: "晴天",
+			Artists: []string{"周杰伦"}, Album: "莫杰他",
 			Duration: "4:30", DurationSeconds: 270, VideoID: "SJKoWAd5ySo",
 			Thumbnail: "https://example.com/b.jpg", MatchScore: 0.9,
 		},
@@ -266,7 +266,7 @@ func TestSearchOK(t *testing.T) {
 	if st.last.Query != "lemon" || st.last.Limit == nil || *st.last.Limit != 10 {
 		t.Fatalf("searcher got: %+v", st.last)
 	}
-	if body.Results[1].Title != "??" {
+	if body.Results[1].Title != "晴天" {
 		t.Fatalf("cjk title lost: %+v", body.Results[1])
 	}
 }
@@ -588,5 +588,83 @@ func assertCode(t *testing.T, rr *httptest.ResponseRecorder, code string) {
 	}
 	if eb.Message == "" {
 		t.Fatal("empty message")
+	}
+}
+
+func TestErrorMessagesReadable(t *testing.T) {
+	cfg := testCfg(t)
+	srv := newTestServer(t, cfg, nil, nil)
+	h := srv.Handler()
+
+	// empty selection -> INVALID_REQUEST with readable message
+	rr := doJSON(t, h, "POST", "/download", map[string]any{}, nil)
+	if rr.Code != 400 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var eb ErrorBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &eb); err != nil {
+		t.Fatal(err)
+	}
+	if eb.Code != "INVALID_REQUEST" {
+		t.Fatalf("code=%s", eb.Code)
+	}
+	if strings.Contains(eb.Message, "?") {
+		t.Fatalf("message looks corrupted: %q", eb.Message)
+	}
+	if eb.Message == "" {
+		t.Fatal("empty message")
+	}
+
+	// session expired message
+	cfg2 := testCfg(t)
+	cfg2.SessionTTL = time.Second
+	now := time.Now()
+	store := session.NewStore(session.Options{TTL: time.Second, Now: func() time.Time { return now }})
+	items := sampleItems()[:1]
+	st := &stubSearcher{resp: &search.Response{
+		Query: "lemon", LimitRequested: 10, LimitUsed: 10, Total: 1, Results: items,
+	}}
+	path := filepath.Join(cfg2.DownloadDir, "x.mp3")
+	_ = os.WriteFile(path, []byte("abc"), 0o644)
+	dl := &stubDownloader{result: &download.Result{
+		Path: path, Size: 3, Token: "0123456789abcdef0123456789abcdef",
+		Format: "mp3", VideoID: "3NNhrqHZqlI", ContentType: "audio/mpeg", Filename: "x.mp3",
+	}}
+	srv2, err := New(Options{Config: cfg2, Searcher: st, Sessions: store, Downloader: dl, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr = doJSON(t, srv2.Handler(), "POST", "/search", map[string]any{"query": "lemon"}, nil)
+	var sbody SearchResponseBody
+	_ = json.Unmarshal(rr.Body.Bytes(), &sbody)
+	now = now.Add(2 * time.Second)
+	rr = doJSON(t, srv2.Handler(), "POST", "/download", map[string]any{
+		"session_id": sbody.SessionID, "index": 1,
+	}, nil)
+	if rr.Code != 410 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &eb)
+	if eb.Code != "SESSION_EXPIRED" {
+		t.Fatalf("code=%s", eb.Code)
+	}
+	if strings.Contains(eb.Message, "?") || !strings.Contains(eb.Message, "会话") {
+		t.Fatalf("session message corrupted/missing: %q", eb.Message)
+	}
+}
+
+func TestTimeoutMapsTo504(t *testing.T) {
+	cfg := testCfg(t)
+	st := &stubSearcher{err: context.DeadlineExceeded}
+	srv := newTestServer(t, cfg, st, nil)
+	rr := doJSON(t, srv.Handler(), "POST", "/search", map[string]any{"query": "x"}, nil)
+	if rr.Code != 504 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	assertCode(t, rr, "TIMEOUT")
+	var eb ErrorBody
+	_ = json.Unmarshal(rr.Body.Bytes(), &eb)
+	if strings.Contains(eb.Message, "?") {
+		t.Fatalf("timeout message corrupted: %q", eb.Message)
 	}
 }

@@ -574,3 +574,66 @@ func TestLiveDownloadLemon(t *testing.T) {
 		t.Fatal("second live should hit cache")
 	}
 }
+
+func TestDownloadSingleflightIgnoresCallerCancel(t *testing.T) {
+	cfg := testConfig(t)
+	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
+	_ = os.WriteFile(fakeBin, []byte("fake"), 0o755)
+	cfg.YtdlpPath = fakeBin
+	cfg.MaxConcurrentDownloads = 2
+
+	// Slow enough that we can cancel the first waiter mid-flight.
+	fake := &fakeRunner{writeSize: 2048, delay: 200 * time.Millisecond}
+	d, err := New(cfg, Options{Runner: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+
+	type outcome struct {
+		res *Result
+		err error
+	}
+	ch1 := make(chan outcome, 1)
+	ch2 := make(chan outcome, 1)
+
+	go func() {
+		res, err := d.Download(ctx1, Request{VideoID: "3NNhrqHZqlI", Title: "Lemon"})
+		ch1 <- outcome{res, err}
+	}()
+
+	// Let the first request enter singleflight / yt-dlp.
+	time.Sleep(30 * time.Millisecond)
+	cancel1()
+
+	go func() {
+		res, err := d.Download(context.Background(), Request{VideoID: "3NNhrqHZqlI", Title: "Lemon"})
+		ch2 <- outcome{res, err}
+	}()
+
+	o1 := <-ch1
+	o2 := <-ch2
+
+	// Second waiter must succeed even if the first caller canceled.
+	if o2.err != nil {
+		t.Fatalf("second download failed after first cancel: %v", o2.err)
+	}
+	if o2.res == nil || o2.res.Path == "" {
+		t.Fatalf("second result empty: %+v", o2.res)
+	}
+	// yt-dlp should still only run once for the shared key.
+	if fake.callCount() != 1 {
+		t.Fatalf("expected 1 ytdlp call, got %d", fake.callCount())
+	}
+	// First may fail with canceled or still succeed depending on timing;
+	// either is acceptable as long as it does not poison the shared flight.
+	if o1.err != nil && !errors.Is(o1.err, context.Canceled) {
+		// WithoutCancel means first may still succeed; if error, it should be cancel-related only.
+		// Accept success or cancel only.
+		if !strings.Contains(o1.err.Error(), "cancel") {
+			t.Fatalf("unexpected first error: %v", o1.err)
+		}
+	}
+}

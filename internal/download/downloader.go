@@ -119,12 +119,16 @@ func (d *Downloader) Download(ctx context.Context, req Request) (*Result, error)
 	}
 
 	key := cacheKey(videoID, format, bitrate)
+	// Detach from caller cancel so one canceled waiter does not poison
+	// other concurrent singleflight sharers of the same key.
+	// DownloadTimeout still bounds the actual yt-dlp work.
+	workCtx := context.WithoutCancel(ctx)
 	v, err, _ := d.group.Do(key, func() (any, error) {
 		// double-check cache inside singleflight
 		if e, ok := d.cache.Get(videoID, format, bitrate); ok {
 			return d.resultFromEntry(e, true), nil
 		}
-		return d.downloadOnce(ctx, req, videoID, format, bitrate)
+		return d.downloadOnce(workCtx, req, videoID, format, bitrate)
 	})
 	if err != nil {
 		return nil, err
