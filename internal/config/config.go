@@ -62,7 +62,7 @@ func Load(envFile string) (*Config, error) {
 
 	cfg := &Config{
 		Host:                   l.str("HOST", "127.0.0.1"),
-		Port:                   l.int("PORT", 8787),
+		Port:                   l.port(8787),
 		APIKey:                 l.str("API_KEY", ""),
 		DefaultLimit:           l.int("DEFAULT_LIMIT", 10),
 		MaxLimit:               l.int("MAX_LIMIT", MinimumMaxLimit),
@@ -252,10 +252,10 @@ type loader struct {
 
 func (l *loader) lookup(key string) (string, bool) {
 	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v), true
+		return expandSimpleRefs(strings.TrimSpace(v)), true
 	}
 	if v, ok := l.file[key]; ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v), true
+		return expandSimpleRefs(strings.TrimSpace(v)), true
 	}
 	return "", false
 }
@@ -278,6 +278,97 @@ func (l *loader) int(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// port 解析监听端口：
+// 1) PORT
+// 2) 常见平台别名 WEB_PORT / HTTP_PORT
+// 3) 默认值
+// 支持把字面量 "${WEB_PORT}" / "$WEB_PORT" 展开成真实环境变量。
+// 若仍是未展开模板，则继续尝试别名，而不是直接把容器打挂。
+func (l *loader) port(fallback int) int {
+	keys := []string{"PORT", "WEB_PORT", "HTTP_PORT"}
+	var lastBad string
+	for _, key := range keys {
+		raw, ok := rawLookup(l.file, key)
+		if !ok {
+			continue
+		}
+		expanded := strings.TrimSpace(expandSimpleRefs(raw))
+		if expanded == "" || looksUnresolvedRef(expanded) {
+			lastBad = raw
+			continue
+		}
+		parsed, err := strconv.Atoi(expanded)
+		if err != nil {
+			l.errors = append(l.errors, fmt.Sprintf("%s 必须是整数，当前 %q", key, expanded))
+			return fallback
+		}
+		return parsed
+	}
+	if lastBad != "" && looksUnresolvedRef(strings.TrimSpace(expandSimpleRefs(lastBad))) {
+		// 平台把 PORT 写成了未展开模板，且别名也没有可用整数时，回落默认端口。
+		return fallback
+	}
+	return fallback
+}
+
+func rawLookup(file map[string]string, key string) (string, bool) {
+	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v), true
+	}
+	if file != nil {
+		if v, ok := file[key]; ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v), true
+		}
+	}
+	return "", false
+}
+
+// expandSimpleRefs 展开 ${VAR} 与 $VAR（仅一层常见模板，足够处理平台变量转发）。
+func expandSimpleRefs(s string) string {
+	if s == "" || !strings.ContainsAny(s, "$") {
+		return s
+	}
+	out := s
+	for i := 0; i < 5 && strings.Contains(out, "$"); i++ {
+		next := os.Expand(out, func(key string) string {
+			if key == "" {
+				return ""
+			}
+			if v, ok := os.LookupEnv(key); ok {
+				return strings.TrimSpace(v)
+			}
+			return ""
+		})
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return strings.TrimSpace(out)
+}
+
+func looksUnresolvedRef(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "${") && strings.Contains(s, "}") {
+		return true
+	}
+	// 纯 $WEB_PORT 这种未展开形式
+	if strings.HasPrefix(s, "$") && !strings.ContainsAny(s, " \t") {
+		name := strings.TrimPrefix(s, "$")
+		name = strings.TrimPrefix(name, "{")
+		name = strings.TrimSuffix(name, "}")
+		if name != "" {
+			if _, err := strconv.Atoi(name); err != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (l *loader) float(key string, fallback float64) float64 {

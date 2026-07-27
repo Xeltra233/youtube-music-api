@@ -169,6 +169,56 @@ func TestNonNumericValuesFailFast(t *testing.T) {
 	}
 }
 
+func TestPortExpandsTemplateAndAliases(t *testing.T) {
+	t.Run("expand_WEB_PORT_template", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("WEB_PORT", "18080")
+		t.Setenv("PORT", "${WEB_PORT}")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load 失败: %v", err)
+		}
+		if cfg.Port != 18080 {
+			t.Fatalf("PORT=${WEB_PORT} 应展开为 18080，实际 %d", cfg.Port)
+		}
+	})
+	t.Run("fallback_WEB_PORT_when_PORT_unresolved", func(t *testing.T) {
+		clearEnv(t)
+		// WEB_PORT 本身也没有时，未展开模板应回落默认，而不是把进程打挂。
+		t.Setenv("PORT", "${WEB_PORT}")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("未展开 PORT 模板不应致命: %v", err)
+		}
+		if cfg.Port != 8787 {
+			t.Fatalf("应回落默认 8787，实际 %d", cfg.Port)
+		}
+	})
+	t.Run("alias_WEB_PORT", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("WEB_PORT", "9090")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load 失败: %v", err)
+		}
+		if cfg.Port != 9090 {
+			t.Fatalf("仅 WEB_PORT 时应使用 9090，实际 %d", cfg.Port)
+		}
+	})
+	t.Run("plain_PORT_still_wins", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("PORT", "8081")
+		t.Setenv("WEB_PORT", "9090")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load 失败: %v", err)
+		}
+		if cfg.Port != 8081 {
+			t.Fatalf("显式 PORT 应优先，实际 %d", cfg.Port)
+		}
+	})
+}
+
 func TestBlankHostFallsBack(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("HOST", "   ")
@@ -268,7 +318,7 @@ func TestByteHelpers(t *testing.T) {
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
-		"HOST", "PORT", "API_KEY",
+		"HOST", "PORT", "WEB_PORT", "HTTP_PORT", "API_KEY",
 		"DEFAULT_LIMIT", "MAX_LIMIT", "MIN_SCORE",
 		"DOWNLOAD_DIR", "AUDIO_FORMAT", "AUDIO_BITRATE", "FFMPEG_LOCATION", "YTDLP_PATH",
 		"PROXY", "COOKIES_FILE", "MAX_CONCURRENT_DOWNLOADS", "MAX_FILESIZE_MB",
