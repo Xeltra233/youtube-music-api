@@ -39,11 +39,13 @@
 - 无 download 行为改动
 - 文档尚未更新（T4）
 
-- [ ] T4 bot 参数文档
-  - 更新 `docs/BOT-INTEGRATION.md`：字段表、示例 JSON、与 `video_id` 区别、推荐 bot 用法
-  - 更新 `docs/BOT-PARAMS.txt`：bot 侧如何用官方视频字段发 MV
-  - 必要时 README 一句索引
-  - 验证：文档字段名与代码 tag 完全一致；中文无乱码
+- [x] T4 bot 参数文档
+  - 完成：
+    - `docs/BOT-INTEGRATION.md`：示例 JSON、字段表、与 `video_id` 区别、推荐 bot 行为、清单项
+    - `docs/BOT-PARAMS.txt`：尾参 `mv/video/official`、delivery=video、4.5 发 MV 流程、伪代码
+    - `README.md`：一句索引官方 MV 字段
+  - 验证：三字段名与 `httpapi.ResultItem` json tag 一致（`rg official_video`）
+  - 下一步：T5 全量测试 + live 抽样
 
 - [ ] T5 全量验证 + 抽样 live（可降级）+ 收尾
   - `go test ./...`

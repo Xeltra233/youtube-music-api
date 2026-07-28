@@ -9,7 +9,9 @@ ytmusic-bridge / bot 参数约定
 ----------------------------
 规则（你已实现的 Task 2）：
 - 只认「最后一个独立单词」
-- 白名单：mp3 / m4a / opus / flac / file / voice
+- 白名单（音频发送）：mp3 / m4a / opus / flac / file / voice
+- 可选扩展白名单（官方视频，仅 bot 侧，不传给本 API 的 format）：
+    mv / video / official
 - 无参数时默认：voice
 - 歌名中间的格式词不剥离
 - 单独一个词且整句就是格式词时，仍可当普通关键词搜索（你现有规则）
@@ -33,12 +35,19 @@ ytmusic-bridge / bot 参数约定
   /music 晴天 file
       → delivery=file；format 用默认音频格式（建议 mp3，或读服务端配置）
 
+  /music 晴天 mv
+      → 发官方音乐视频（见第 4.5 / 第 5 节）；不走 /download 音频
+
+  /music Lemon - Kenshi Yonezu official
+      → 同上，官方 MV 模式
+
 
 2. 两层概念：delivery vs format
 ------------------------------
 A) deliveryMode（只存在于 bot，不要传给本 API）
    - voice : 以「语音消息」发出（平台侧）
    - file  : 以「文件/音频文件」发出（平台侧）
+   - video : 以「官方音乐视频」发出（平台侧：视频消息或链接）
 
 B) format（要传给本 API 的 POST /download 字段）
    服务端当前支持：
@@ -50,7 +59,17 @@ B) format（要传给本 API 的 POST /download 字段）
 
 服务端默认（请求没带 format 时）：
   用环境变量 AUDIO_FORMAT，默认 mp3。
-  所以 bot 若要「按用户参数返回」，下载时必须显式传 format，不要依赖服务端默认。
+   所以 bot 若要「按用户参数返回」，下载时必须显式传 format，不要依赖服务端默认。
+
+C) 官方视频字段（来自 POST /search 的 results[]，不是 /download 请求体）
+   official_video_id    官方 MV 的 YouTube ID；没有则为空串
+   official_video_url   https://www.youtube.com/watch?v=<id>；没有则为空串
+   has_official_video   true/false
+
+   注意：
+   - video_id = 歌曲音轨，给 /download 下音频
+   - official_video_* = 官方 MV，给 bot 发视频/链接
+   - 不要把 official_video_id 默认塞进 /download（当前下载链路是音频）
 
 
 3. bot → API 推荐映射
@@ -64,6 +83,8 @@ mp3               file            mp3
 m4a               file            m4a
 opus              file            opus
 flac              file            （先不要调 API）提示用户暂不支持 flac
+mv / video / official
+                  video           （不调用 /download）
 file mp3 等组合   以最后一个词为准；若最后是 file/voice 则只改 delivery
 
 说明：
@@ -92,7 +113,14 @@ Base URL 示例：
     "min_score": 0.35
   }
 
-  响应关键字段：session_id、results[].index、results[].display_name、results[].video_id
+  响应关键字段：
+    session_id
+    results[].index
+    results[].display_name
+    results[].video_id                 # 下音频用
+    results[].official_video_id        # 官方 MV id，可能为空
+    results[].official_video_url       # 官方 MV 链接，可能为空
+    results[].has_official_video       # bool
 
 4.2 下载（按序号，最常用）
   POST /download
@@ -130,6 +158,23 @@ Base URL 示例：
   }
 
 
+4.5 发官方音乐视频（bot 侧，不新增下载 API）
+------------------------------------------
+搜索拿到 results 后：
+
+  item = results[用户选中的 index-1]
+  if user wants official MV:    # 尾参 mv/video/official，或你自己的开关
+      if item.has_official_video:
+          sendVideoLink(item.official_video_url)
+          # 或平台支持时：sendVideoById(item.official_video_id)
+      else:
+          reply("这首没有找到官方音乐视频")
+          # 可选：回退到音频 delivery=voice/file
+      return
+
+  # 否则仍走原来的 /download 音频链路，使用 item.video_id / session index
+
+
 5. bot 收到响应后怎么发
 ----------------------
 1) 以响应头 / JSON 的 format 为准，不要写死「这是 mp3」。
@@ -145,6 +190,11 @@ Base URL 示例：
    m4a  → audio/mp4
    opus → audio/ogg
 5) 若 JSON 模式：先读 body.format / body.file_url，再下载文件。
+6) deliveryMode=video（官方 MV）：
+   - 不要调用 /download
+   - 优先发 official_video_url
+   - 或按聊天平台能力用 official_video_id 发视频
+   - has_official_video=false 时提示并可选回退音频
 
 
 6. 错误与回退（bot 侧建议）
@@ -172,16 +222,24 @@ elif formatToken == voice or formatToken is empty:
 elif formatToken == flac:
     reply("暂不支持 flac，请用 mp3/m4a/opus")
     return
+elif formatToken in (mv, video, official):
+    delivery = video
+    apiFormat = None   # 不调用 /download
+
+# 若 delivery == video:
+#   用 /search 结果的 official_video_url / official_video_id 发送
+#   没有则提示「没有官方视频」
 
 # 搜索或选歌后：
-POST /download {
-  session_id, index|name|video_id,
-  format: apiFormat
-}
-
-# 发送时：
-if delivery == voice: sendVoice(bytes)
-else: sendFile(bytes, filename=title + "." + actualFormat)
+if delivery == video:
+    use search result official_video_* fields
+else:
+    POST /download {
+      session_id, index|name|video_id,
+      format: apiFormat
+    }
+    if delivery == voice: sendVoice(bytes)
+    else: sendFile(bytes, filename=title + "." + actualFormat)
 
 
 8. 和环境变量的关系

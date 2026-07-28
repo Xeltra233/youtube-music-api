@@ -12,6 +12,8 @@
 > **Bot 开发者请先读 [`docs/BOT-INTEGRATION.md`](docs/BOT-INTEGRATION.md)**：完整契约、字段语义、错误码、Python / Go / PowerShell 示例，以及并发行为说明。
 >
 > 用户命令尾参（`mp3` / `m4a` / `opus` / `file` / `voice`）与 API 字段映射见 [`docs/BOT-PARAMS.txt`](docs/BOT-PARAMS.txt)。
+>
+> `/search` 结果额外返回官方 MV 字段：`official_video_id` / `official_video_url` / `has_official_video`（发官方视频用；下音频仍用 `video_id`）。
 
 ## 技术栈与选型
 

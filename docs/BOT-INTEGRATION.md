@@ -43,6 +43,13 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 - `session_id` 默认 **30 分钟**过期（响应里的 `expires_in` 是剩余秒数）。过期后再选歌返回 `410`，bot 应提示用户重新搜索。
 - 用户也可以不走 session，直接用 `video_id` 下载（例如 bot 自己做了收藏夹、重播功能）。
 
+补充（官方音乐视频）：
+
+- `/search` 的每条 `results[]` 会尽量附带官方 MV 字段：`official_video_id` / `official_video_url` / `has_official_video`。
+- **听歌/下音频** 仍用原来的 `video_id` + `/download`。
+- **发官方音乐视频** 用 `official_video_id` 或 `official_video_url`（本服务当前不提供整段 MV 文件下载）。
+- 找不到官方视频时这三个字段仍返回，值为 `""` / `""` / `false`。
+
 ---
 
 ## 2. `POST /search` 搜索歌曲
@@ -96,7 +103,10 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
       "duration_seconds": 257,
       "video_id": "3NNhrqHZqlI",
       "thumbnail": "https://yt3.googleusercontent.com/Yiqnzq5SfMrNjf9XTAMCPadMclhC8ltAVaePndf64gdwvjaN6eEDFBw2aKRukpqxlb7rdkb27BdUFLIDfA=w120-h120-l90-rj",
-      "match_score": 1
+      "match_score": 1,
+      "official_video_id": "SX_r8WxC3jY",
+      "official_video_url": "https://www.youtube.com/watch?v=SX_r8WxC3jY",
+      "has_official_video": true
     },
     {
       "index": 2,
@@ -108,7 +118,10 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
       "duration_seconds": 287,
       "video_id": "27qbfxakISw",
       "thumbnail": "https://yt3.googleusercontent.com/rQ53238Rx_FiFyhXOqMyu-gpVKm4MWazwLFdqCd-baYJqrnV-emoePxFPdmxGspLeeNXehuYbZgTQL9B=w120-h120-l90-rj",
-      "match_score": 0.8909090909090909
+      "match_score": 0.8909090909090909,
+      "official_video_id": "",
+      "official_video_url": "",
+      "has_official_video": false
     },
     {
       "index": 3,
@@ -120,7 +133,10 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
       "duration_seconds": 208,
       "video_id": "zOkIe3RcTCs",
       "thumbnail": "https://yt3.googleusercontent.com/7e0qJAww69B2DFDDUgFqp59lWMXzuHGS-GG_BFR1sD8rcO80G71aP86hV9NGCqsjx4dMEzO1yxZojAA=w120-h120-l90-rj",
-      "match_score": 0.7894736842105263
+      "match_score": 0.7894736842105263,
+      "official_video_id": "",
+      "official_video_url": "",
+      "has_official_video": false
     }
   ]
 }
@@ -149,6 +165,35 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 | `video_id` | string | YouTube 视频 ID，全局唯一。**建议 bot 存这个做收藏/去重** |
 | `thumbnail` | string | 封面图 URL，可直接给聊天平台做缩略图 |
 | `match_score` | float | `0.0 ~ 1.0` 相似度，结果已按它降序排列。`1.0` = 与 query 完全一致 |
+
+### 官方音乐视频字段（新增，可选增强）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `official_video_id` | string | 匹配到的**官方音乐视频** YouTube ID；没有则为 `""` |
+| `official_video_url` | string | 便于 bot 直接发送的链接：`https://www.youtube.com/watch?v=...`；没有则为 `""` |
+| `has_official_video` | bool | `official_video_id != ""` 的便捷布尔 |
+
+**与 `video_id` 的区别（非常重要）**：
+
+| 字段 | 是什么 | bot 怎么用 |
+| --- | --- | --- |
+| `video_id` | 歌曲音轨 ID（YouTube Music songs 结果） | 传给 `POST /download` 下**音频** |
+| `official_video_id` / `official_video_url` | 官方 MV（优先 OMV） | **不要**默认拿去 `/download`；用来发视频消息 / 发链接 / 打开官方 MV |
+
+推荐 bot 行为：
+
+1. 用户要听歌 / 下音频：继续 `session_id + index/name` 或 `video_id` → `/download`
+2. 用户要官方 MV（例如命令尾参 `mv` / `video` / `官方`，由 bot 自己解析）：
+   - 若 `has_official_video == true`：直接发 `official_video_url`，或按平台能力用 `official_video_id` 发视频
+   - 若为 `false`：提示「没有找到官方视频」，可回退到音频或普通结果
+3. 旧 bot 不认识新字段时，可忽略；JSON 解析请兼容未知字段
+
+说明与边界：
+
+- 服务端会并行请求 songs + videos，再按标题/艺人相似度匹配；匹配不到就留空，**不报错**。
+- videos 上游失败时：主搜索仍 200，官方视频三字段全部为空。
+- 当前 **没有**「下载官方 MV 成 mp4 文件」接口；发官方视频靠 ID/URL。
 
 ---
 
@@ -284,6 +329,8 @@ bot 启动时先打这个，确认对接服务活着，并确认 `ytdlp` 字段�
 - [ ] `/play <关键词>` 走 `POST /search`，`limit` 由 bot 配置决定（1–20）
 - [ ] 传 `min_score`（建议 `0.35`），`total == 0` 时提示「没搜到」
 - [ ] 把 `results` 渲染成 `index. display_name (duration)` 列表
+- [ ] 若支持「发官方 MV」：读 `has_official_video` / `official_video_url`（或 `official_video_id`）
+- [ ] 切记：`/download` 继续用 `video_id`，不要误用 `official_video_id` 当下音频 ID（除非你明确知道平台/链路支持）
 - [ ] 每个会话存 `session_id`（含过期时间），别用全局变量
 - [ ] 用户回复纯数字走 `index`；回复文字走 `name`
 - [ ] 处理 `410`（过期）、`409`（同名歧义）、`413`（太大）三个高频错误
