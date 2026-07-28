@@ -27,10 +27,19 @@
   - 验证：文档含 `format=mp4` / `video/mp4`，旧“不提供整段 MV”表述已清除
   - 下一步：T4 全量验证
 
-- [ ] T4 全量测试 + live 抽样（可降级）+ 收尾
-  - `go test ./...`
-  - 可选 live：official id + mp4
-  - 清理临时脚本；提交（无敏感数据）
+- [x] T4 全量测试 + live 抽样（可降级）+ 收尾
+  - 完成：
+    - `go test ./...` 全绿
+    - live：`SX_ViT4Ra7k` + `format=mp4` → `video/mp4`，约 15.1MB / 4.3s
+    - 清理 `work/live_mp4_probe.go`
+  - 验证：单测 + live + 文档一致
+
+## 检查点（T1–T3 后 / 最终）
+
+- 音频路径未回归（全量测试含 download/httpapi）
+- mp4 视频下载可用（单测 + live）
+- 文档已改为 official_video_id + format=mp4
+- 无敏感数据提交
 
 ## 检查点
 
@@ -38,7 +47,7 @@
 
 ## 最终 review 清单
 
-- [ ] 音频下载未回归
-- [ ] mp4 视频下载可用（单测/或 live）
-- [ ] 文档与实现一致，bot 可按文档发官方 MV 文件
-- [ ] 无敏感数据提交
+- [x] 音频下载未回归
+- [x] mp4 视频下载可用（单测/或 live）
+- [x] 文档与实现一致，bot 可按文档发官方 MV 文件
+- [x] 无敏感数据提交
