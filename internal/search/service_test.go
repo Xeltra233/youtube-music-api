@@ -35,6 +35,49 @@ func (s *stubUpstream) Search(_ context.Context, query string) ([]ytmusic.Track,
 	return out, nil
 }
 
+// stubVideoUpstream 同时实现 songs Search 与 videos SearchFilter。
+type stubVideoUpstream struct {
+	songs      []ytmusic.Track
+	videos     []ytmusic.Track
+	songsErr   error
+	videosErr  error
+	songCalls  int
+	videoCalls int
+	lastSongQ  string
+	lastVideoQ string
+	lastFilter ytmusic.SearchFilter
+}
+
+func (s *stubVideoUpstream) Search(_ context.Context, query string) ([]ytmusic.Track, error) {
+	s.songCalls++
+	s.lastSongQ = query
+	if s.songsErr != nil {
+		return nil, s.songsErr
+	}
+	return cloneTracks(s.songs), nil
+}
+
+func (s *stubVideoUpstream) SearchFilter(_ context.Context, query string, filter ytmusic.SearchFilter) ([]ytmusic.Track, error) {
+	s.videoCalls++
+	s.lastVideoQ = query
+	s.lastFilter = filter
+	if s.videosErr != nil {
+		return nil, s.videosErr
+	}
+	return cloneTracks(s.videos), nil
+}
+
+func cloneTracks(in []ytmusic.Track) []ytmusic.Track {
+	out := make([]ytmusic.Track, len(in))
+	for i, tr := range in {
+		out[i] = tr
+		if tr.Artists != nil {
+			out[i].Artists = append([]string(nil), tr.Artists...)
+		}
+	}
+	return out
+}
+
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	cfg, err := config.Load("")
@@ -58,6 +101,12 @@ func track(id, title string, artists []string) ytmusic.Track {
 		DurationSeconds: 180,
 		Thumbnail:       "http://img/" + id,
 	}
+}
+
+func videoTrack(id, title string, artists []string, musicType string) ytmusic.Track {
+	tr := track(id, title, artists)
+	tr.MusicVideoType = musicType
+	return tr
 }
 
 func makeTracks(n int) []ytmusic.Track {
@@ -359,5 +408,189 @@ func TestSearchStableOrderOnEqualScores(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("order=%v want %v", got, want)
 		}
+	}
+}
+
+func TestSearchAttachesOfficialVideoFromOMV(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("songLemon", "Lemon", []string{"Kenshi Yonezu"}),
+			track("songOther", "Shape of You", []string{"Ed Sheeran"}),
+		},
+		videos: []ytmusic.Track{
+			videoTrack("omvLemon", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_OMV"),
+			videoTrack("omvShape", "Shape of You", []string{"Ed Sheeran"}, "MUSIC_VIDEO_TYPE_OMV"),
+			videoTrack("ugcNoise", "Lemon piano cover", []string{"Random"}, "MUSIC_VIDEO_TYPE_UGC"),
+		},
+	}
+	svc, err := New(up, testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Search(context.Background(), Request{Query: "lemon kenshi yonezu", Limit: intPtr(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.songCalls != 1 || up.videoCalls != 1 {
+		t.Fatalf("calls song=%d video=%d", up.songCalls, up.videoCalls)
+	}
+	if up.lastFilter != ytmusic.SearchFilterVideos {
+		t.Fatalf("filter=%q", up.lastFilter)
+	}
+	if up.lastSongQ != up.lastVideoQ || up.lastSongQ == "" {
+		t.Fatalf("queries song=%q video=%q", up.lastSongQ, up.lastVideoQ)
+	}
+
+	bySong := map[string]Item{}
+	for _, it := range resp.Results {
+		bySong[it.VideoID] = it
+	}
+	lemon := bySong["songLemon"]
+	if !lemon.HasOfficialVideo || lemon.OfficialVideoID != "omvLemon" {
+		t.Fatalf("lemon official=%+v", lemon)
+	}
+	if lemon.OfficialVideoURL != "https://www.youtube.com/watch?v=omvLemon" {
+		t.Fatalf("lemon url=%q", lemon.OfficialVideoURL)
+	}
+	// Shape 也可能因 query 分数较低被 min_score=0 保留；若在结果中也应绑上自己的 OMV。
+	if shape, ok := bySong["songOther"]; ok {
+		if !shape.HasOfficialVideo || shape.OfficialVideoID != "omvShape" {
+			t.Fatalf("shape official=%+v", shape)
+		}
+	}
+}
+
+func TestSearchOfficialVideoPrefersOMVOverUGC(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("song1", "Lemon", []string{"Kenshi Yonezu"}),
+		},
+		videos: []ytmusic.Track{
+			videoTrack("ugc1", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_UGC"),
+			videoTrack("omv1", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_OMV"),
+		},
+	}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("n=%d", len(resp.Results))
+	}
+	if resp.Results[0].OfficialVideoID != "omv1" {
+		t.Fatalf("want omv1, got %+v", resp.Results[0])
+	}
+}
+
+func TestSearchOfficialVideoFallbackToNonATVWhenNoOMV(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("song1", "Lemon", []string{"Kenshi Yonezu"}),
+		},
+		videos: []ytmusic.Track{
+			videoTrack("atv1", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_ATV"),
+			videoTrack("ugc1", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_UGC"),
+		},
+	}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon - Kenshi Yonezu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Results[0].OfficialVideoID != "ugc1" {
+		t.Fatalf("want ugc fallback, got %+v", resp.Results[0])
+	}
+}
+
+func TestSearchOfficialVideoNoMatchBelowThreshold(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("song1", "Lemon", []string{"Kenshi Yonezu"}),
+		},
+		videos: []ytmusic.Track{
+			videoTrack("omvX", "Bohemian Rhapsody", []string{"Queen"}, "MUSIC_VIDEO_TYPE_OMV"),
+		},
+	}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := resp.Results[0]
+	if it.HasOfficialVideo || it.OfficialVideoID != "" || it.OfficialVideoURL != "" {
+		t.Fatalf("expected empty official fields, got %+v", it)
+	}
+}
+
+func TestSearchVideosUpstreamErrorDegrades(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("song1", "Lemon", []string{"Kenshi Yonezu"}),
+		},
+		videosErr: errors.New("videos boom"),
+	}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon"})
+	if err != nil {
+		t.Fatalf("songs search should succeed on videos failure: %v", err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].VideoID != "song1" {
+		t.Fatalf("results=%+v", resp.Results)
+	}
+	if resp.Results[0].HasOfficialVideo || resp.Results[0].OfficialVideoID != "" {
+		t.Fatalf("official should be empty on degrade: %+v", resp.Results[0])
+	}
+	if up.videoCalls != 1 {
+		t.Fatalf("videoCalls=%d", up.videoCalls)
+	}
+}
+
+func TestSearchWithoutVideoUpstreamLeavesOfficialEmpty(t *testing.T) {
+	// 旧 stub 只实现 Search：官方字段应稳定为零值，且不 panic。
+	up := &stubUpstream{tracks: []ytmusic.Track{track("song1", "Lemon", []string{"Kenshi Yonezu"})}}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Results[0].HasOfficialVideo || resp.Results[0].OfficialVideoID != "" {
+		t.Fatalf("unexpected official: %+v", resp.Results[0])
+	}
+}
+
+func TestSearchSkipsOfficialWhenSameAsSongVideoID(t *testing.T) {
+	up := &stubVideoUpstream{
+		songs: []ytmusic.Track{
+			track("sameID", "Lemon", []string{"Kenshi Yonezu"}),
+		},
+		videos: []ytmusic.Track{
+			videoTrack("sameID", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_OMV"),
+		},
+	}
+	svc, _ := New(up, testConfig(t))
+	resp, err := svc.Search(context.Background(), Request{Query: "Lemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Results[0].HasOfficialVideo {
+		t.Fatalf("same id should not count as extra official video: %+v", resp.Results[0])
+	}
+}
+
+func TestAttachOfficialVideosUnit(t *testing.T) {
+	items := []Item{
+		{VideoID: "s1", Title: "Lemon", Artists: []string{"Kenshi Yonezu"}, DisplayName: "Lemon - Kenshi Yonezu"},
+		{VideoID: "s2", Title: "Unrelated", Artists: []string{"ZZZ"}, DisplayName: "Unrelated - ZZZ"},
+	}
+	videos := []ytmusic.Track{
+		videoTrack("omv1", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_OMV"),
+	}
+	attachOfficialVideos(items, videos)
+	if !items[0].HasOfficialVideo || items[0].OfficialVideoID != "omv1" {
+		t.Fatalf("item0=%+v", items[0])
+	}
+	if items[1].HasOfficialVideo {
+		t.Fatalf("item1 should stay empty: %+v", items[1])
 	}
 }

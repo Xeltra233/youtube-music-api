@@ -12,13 +12,16 @@
   - 残余风险：真实 videos 响应布局可能比 fixture 更杂，T2 匹配时再兜底
   - 下一步：T2 search 层填充 official video 字段
 
-- [ ] T2 匹配与填充：search 层为每条结果写入官方视频字段
-  - `search.Item` 增加 `OfficialVideoID` / `OfficialVideoURL` / `HasOfficialVideo`
-  - songs+videos 并行（或可控串行）拉取
-  - OMV 优先 + display_name/title 相似度匹配 + 阈值
-  - videos 失败降级为空字段，主搜索仍成功
-  - 单测：命中 / 未命中 / 上游 videos 失败 / 防御性拷贝
-  - 验证：`go test ./internal/search`
+- [x] T2 匹配与填充：search 层为每条结果写入官方视频字段
+  - 完成：
+    - `search.Item` 增加 `OfficialVideoID` / `OfficialVideoURL` / `HasOfficialVideo`
+    - `VideoUpstream` 可选接口；`*ytmusic.Client` 自动并行 songs+videos
+    - `attachOfficialVideos`：OMV 优先，无 OMV 时降级非 ATV；`MatchScore >= 0.55`
+    - videos 上游失败只打 warn，主搜索仍成功且官方字段为空
+    - 同 song `video_id` 不重复当作 official
+  - 验证：`go test ./internal/search` 通过（含命中/未命中/降级/无 VideoUpstream）
+  - 残余风险：真实 OMV 标题噪声可能导致个别漏匹配；T5 live 抽样再确认
+  - 下一步：T3 HTTP `ResultItem` 透出 JSON 字段
 
 - [ ] T3 HTTP 契约透出：`ResultItem` JSON 新字段 + 回归
   - `httpapi.ResultItem` / `itemToAPI` 映射新字段

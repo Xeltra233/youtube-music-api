@@ -1,6 +1,7 @@
 // Package search 把上游 YouTube Music 原始结果整理成 bot 可消费的候选列表。
 //
-// 本层负责：limit 夹紧、display_name / match_score、min_score 过滤、截断、1-based index。
+// 本层负责：limit 夹紧、display_name / match_score、min_score 过滤、截断、1-based index，
+// 以及为每条结果尽量填充官方音乐视频字段（失败降级为空，不影响主搜索）。
 // session_id 由后续 session 层写入，不在本包处理。
 package search
 
@@ -8,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/xeltra/ytmusic-bridge/internal/config"
 	"github.com/xeltra/ytmusic-bridge/internal/matching"
@@ -25,6 +28,12 @@ var (
 // Upstream 是搜索上游（真实实现为 *ytmusic.Client，测试可 stub）。
 type Upstream interface {
 	Search(ctx context.Context, query string) ([]ytmusic.Track, error)
+}
+
+// VideoUpstream 可选：若实现，则并行拉取 videos 过滤结果用于官方 MV 匹配。
+// *ytmusic.Client 已实现；旧 stub 未实现时官方视频字段保持为空。
+type VideoUpstream interface {
+	SearchFilter(ctx context.Context, query string, filter ytmusic.SearchFilter) ([]ytmusic.Track, error)
 }
 
 // Service 组合上游与配置，产出排序/过滤后的候选列表。
@@ -67,6 +76,12 @@ type Item struct {
 	VideoID         string
 	Thumbnail       string
 	MatchScore      float64
+	// OfficialVideoID 是匹配到的官方音乐视频 ID；没有则为空。
+	OfficialVideoID string
+	// OfficialVideoURL 便于 bot 直接发送，形如 https://www.youtube.com/watch?v=...
+	OfficialVideoURL string
+	// HasOfficialVideo 等价于 OfficialVideoID != ""。
+	HasOfficialVideo bool
 }
 
 // Response 是搜索服务结果（不含 session_id / expires_in，那是 G5 的职责）。
@@ -96,7 +111,7 @@ func (s *Service) Search(ctx context.Context, req Request) (*Response, error) {
 	}
 	minScoreUsed := s.resolveMinScore(req.MinScore)
 
-	tracks, err := s.upstream.Search(ctx, query)
+	tracks, videos, err := s.fetchTracks(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("search: upstream: %w", err)
 	}
@@ -138,6 +153,8 @@ func (s *Service) Search(ctx context.Context, req Request) (*Response, error) {
 		scored = scored[:limitUsed]
 	}
 
+	attachOfficialVideos(scored, videos)
+
 	for i := range scored {
 		scored[i].Index = i + 1
 	}
@@ -154,6 +171,58 @@ func (s *Service) Search(ctx context.Context, req Request) (*Response, error) {
 		Truncated:      truncated,
 		Results:        scored,
 	}, nil
+}
+
+func (s *Service) fetchTracks(ctx context.Context, query string) (songs, videos []ytmusic.Track, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	type result struct {
+		tracks []ytmusic.Track
+		err    error
+	}
+
+	songCh := make(chan result, 1)
+	go func() {
+		tr, e := s.upstream.Search(ctx, query)
+		songCh <- result{tracks: tr, err: e}
+	}()
+
+	var (
+		videoTracks []ytmusic.Track
+		videoErr    error
+		wg          sync.WaitGroup
+	)
+	if vu, ok := s.upstream.(VideoUpstream); ok {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			videoTracks, videoErr = vu.SearchFilter(ctx, query, ytmusic.SearchFilterVideos)
+		}()
+	}
+
+	songRes := <-songCh
+	wg.Wait()
+
+	if songRes.err != nil {
+		return nil, nil, songRes.err
+	}
+	if videoErr != nil {
+		// 官方视频是增强字段：videos 失败不拖垮主搜索。
+		slog.Warn("search: videos upstream failed; official video fields left empty",
+			"query", query,
+			"err", videoErr,
+		)
+		videoTracks = nil
+	}
+	if songRes.tracks == nil {
+		songRes.tracks = []ytmusic.Track{}
+	}
+	if videoTracks == nil {
+		videoTracks = []ytmusic.Track{}
+	}
+	return songRes.tracks, videoTracks, nil
 }
 
 func (s *Service) resolveLimit(limit *int) (requested, used int, err error) {
