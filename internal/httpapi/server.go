@@ -113,6 +113,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
 	mux.HandleFunc("GET /api/admin/check-auth", s.handleAdminCheckAuth)
+	mux.HandleFunc("GET /api/admin/cookies/status", s.handleAdminCookieStatus)
+	mux.HandleFunc("POST /api/admin/cookies/upload", s.handleAdminCookieUpload)
 	return s.withMiddleware(mux)
 }
 

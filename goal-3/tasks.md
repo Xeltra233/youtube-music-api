@@ -10,7 +10,10 @@
   - API：`POST /api/admin/login` `POST /api/admin/logout` `GET /api/admin/check-auth`
   - admin 路径绕过 bot `API_KEY`
   - 单测：`go test ./internal/adminauth ./internal/httpapi` 通过
-- [ ] T3 cookies 上传/状态 API（写入 COOKIES_DIR，不回传内容）+ 测试
+- [x] T3 cookies 上传/状态 API（写入 COOKIES_DIR，不回传内容）+ 测试
+  - `GET /api/admin/cookies/status` `POST /api/admin/cookies/upload`
+  - 写入 `COOKIES_DIR`，提升 `youtube.txt`；响应无 cookie 正文
+  - 单测：`TestAdminCookieUploadAndStatus` 等通过
 - [ ] T4 静态前端：独立登录页 + 上传页（居中、拖拽上传）
 - [ ] T5 路由挂载 embed、与现有 middleware 协调
 - [ ] T6 `.env.example` / README / Dockerfile 文档
@@ -21,4 +24,8 @@
 每完成 3 个 task 做一次构建/测试检查。
 
 ## 下一步
-T3：cookies 上传/状态 API。
+T4：静态登录页 + 上传页前端。
+
+## 检查点（T1–T3）
+- `go test ./internal/httpapi ./internal/adminauth ./internal/config` 通过
+- 管理 API 已具备登录与上传能力，待前端接入
