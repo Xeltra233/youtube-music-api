@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>管理登录 · ytmusic-bridge</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body class="login-body">
+  <main class="login-page">
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">Y</div>
+      <h1 id="login-title">ytmusic-bridge</h1>
+      <p class="sub">管理员登录 · Cookie 上传</p>
+      <form id="loginForm" autocomplete="on">
+        <label for="password">管理员密码</label>
+        <div class="pw-row">
+          <input id="password" name="password" type="password" autocomplete="current-password" required autofocus placeholder="ADMIN_PASSWORD">
+          <button type="button" class="btn ghost" id="togglePw" aria-label="显示或隐藏密码">显示</button>
+        </div>
+        <button type="submit" class="btn primary" id="loginBtn">登录</button>
+      </form>
+      <p class="err" id="loginErr" role="alert"></p>
+      <p class="hint">密码由环境变量 <code>ADMIN_PASSWORD</code> 配置；未设置则管理端关闭。</p>
+    </section>
+  </main>
+  <script>
+    async function checkAuth() {
+      try {
+        const r = await fetch("/api/admin/check-auth", { credentials: "same-origin" });
+        const j = await r.json();
+        if (j && j.authenticated) location.replace("./");
+      } catch (_) {}
+    }
+    document.getElementById("togglePw").addEventListener("click", () => {
+      const input = document.getElementById("password");
+      const btn = document.getElementById("togglePw");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.textContent = show ? "隐藏" : "显示";
+    });
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("loginErr");
+      const btn = document.getElementById("loginBtn");
+      err.textContent = "";
+      btn.disabled = true;
+      try {
+        const password = document.getElementById("password").value;
+        const r = await fetch("/api/admin/login", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.ok === false) {
+          err.textContent = (j.error && j.error.message) || "登录失败";
+          btn.disabled = false;
+          return;
+        }
+        location.replace("./");
+      } catch (_) {
+        err.textContent = "网络错误，请重试";
+        btn.disabled = false;
+      }
+    });
+    checkAuth();
+  </script>
+</body>
+</html>

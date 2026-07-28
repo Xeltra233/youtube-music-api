@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cookie 上传 · ytmusic-bridge</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body class="app-body">
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark sm" aria-hidden="true">Y</span>
+      <div>
+        <div class="topbar-title">Cookie 上传</div>
+        <div class="topbar-sub">ytmusic-bridge 管理</div>
+      </div>
+    </div>
+    <button type="button" class="btn ghost" id="logoutBtn">退出</button>
+  </header>
+
+  <main class="app-main">
+    <section class="panel">
+      <h2>当前状态</h2>
+      <div class="status-grid" id="statusGrid">
+        <div class="stat"><span class="stat-k">状态</span><span class="stat-v" id="stPresent">加载中…</span></div>
+        <div class="stat"><span class="stat-k">文件</span><span class="stat-v mono" id="stFile">-</span></div>
+        <div class="stat"><span class="stat-k">大小</span><span class="stat-v" id="stSize">-</span></div>
+        <div class="stat"><span class="stat-k">更新时间</span><span class="stat-v" id="stMod">-</span></div>
+        <div class="stat"><span class="stat-k">保活</span><span class="stat-v" id="stKeep">-</span></div>
+        <div class="stat"><span class="stat-k">目录文件数</span><span class="stat-v" id="stCount">-</span></div>
+      </div>
+      <p class="hint">不会在页面上显示 cookie 内容。云容器请挂载 <code>/app/cookies</code> 文件夹。</p>
+    </section>
+
+    <section class="panel">
+      <h2>上传 Netscape cookies.txt</h2>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择或拖拽 cookie 文件">
+        <p class="drop-title">拖拽 .txt 到此处，或点击选择</p>
+        <p class="drop-sub">文件名随意；服务会自动整理为 youtube.txt</p>
+        <input id="fileInput" type="file" accept=".txt,.cookies,text/plain" hidden>
+      </div>
+      <div class="row">
+        <div class="file-name mono" id="fileName">未选择文件</div>
+        <button type="button" class="btn primary" id="uploadBtn" disabled>上传</button>
+      </div>
+      <p class="err" id="uploadErr" role="alert"></p>
+      <p class="ok" id="uploadOk" role="status"></p>
+    </section>
+  </main>
+  <script src="admin.js"></script>
+</body>
+</html>

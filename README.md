@@ -389,3 +389,27 @@ API_KEY=你的密钥
 用法：把浏览器导出的 cookies 文本丢进挂载目录即可。服务会自动提升为 `youtube.txt`，并在保活开启时定期用 yt-dlp 回写刷新。
 
 **不要**把真实 cookie 提交到 git 或推进公开仓库。
+
+## 管理上传面板
+
+用于上传 Netscape cookies 的独立管理前端（与 bot `API_KEY` 分离）：
+
+| 地址 | 说明 |
+| --- | --- |
+| `/admin/login.html` | 管理员登录页（卡片居中） |
+| `/admin/` | 登录后的上传页（拖拽 / 选择 .txt） |
+
+环境变量：
+
+```text
+ADMIN_PASSWORD=你的强密码
+# 可选
+# ADMIN_SESSION_SECRET=随机长串
+# ADMIN_SESSION_TTL_SECONDS=43200
+COOKIES_DIR=/app/cookies
+COOKIES_KEEPALIVE=1
+```
+
+- `ADMIN_PASSWORD` **为空则管理端关闭**（登录/上传 API 返回 503）
+- 登录后使用 HttpOnly Cookie 会话；上传只返回元数据，不回传 cookie 正文
+- 公网务必设置强管理员密码，并继续为 bot 接口设置 `API_KEY`

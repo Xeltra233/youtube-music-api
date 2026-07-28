@@ -14,17 +14,24 @@
   - `GET /api/admin/cookies/status` `POST /api/admin/cookies/upload`
   - 写入 `COOKIES_DIR`，提升 `youtube.txt`；响应无 cookie 正文
   - 单测：`TestAdminCookieUploadAndStatus` 等通过
-- [ ] T4 静态前端：独立登录页 + 上传页（居中、拖拽上传）
-- [ ] T5 路由挂载 embed、与现有 middleware 协调
-- [ ] T6 `.env.example` / README / Dockerfile 文档
-- [ ] T7 浏览器截图验证 + 全量测试
-- [ ] T8 提交推送（无敏感文件）
+- [x] T4 静态前端：独立登录页 + 上传页（居中、拖拽上传）
+  - `internal/admin/assets/{login.html,index.html,admin.css,admin.js}`
+  - 登录卡片 `100dvh` flex 居中；上传页拖拽区
+- [x] T5 路由挂载 embed、与现有 middleware 协调
+  - `/admin` `/admin/` `/admin/*` embed；admin 路径绕过 API_KEY
+- [x] T6 `.env.example` / README / Dockerfile 文档
+  - README 管理面板说明已补
+- [x] T7 浏览器截图验证 + 全量测试
+  - login.png：登录卡片居中 PASS
+  - upload.png：状态区 + 拖拽上传区 PASS（未登录提示可见）
+  - `go test ./...` 通过
+- [x] T8 提交推送（无敏感文件）
 
 ## 检查点
 每完成 3 个 task 做一次构建/测试检查。
 
 ## 下一步
-T4：静态登录页 + 上传页前端。
+goal-3 完成：管理上传前端可用。
 
 ## 检查点（T1–T3）
 - `go test ./internal/httpapi ./internal/adminauth ./internal/config` 通过
