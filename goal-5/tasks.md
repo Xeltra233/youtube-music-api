@@ -10,11 +10,14 @@
   - 验证：`go test ./internal/download` 通过
   - 下一步：T2 HTTP 契约
 
-- [ ] T2 HTTP 契约与错误文案
-  - `/download` 接受 `format=mp4`
-  - 二进制头 / `mode=json` 的 format、Content-Type 正确
-  - 非法 format 错误信息包含 mp4
-  - 验证：`go test ./internal/httpapi ./internal/download`
+- [x] T2 HTTP 契约与错误文案
+  - 完成：
+    - `/download` 透传 `format=mp4`（下载层已支持）
+    - 新增 `TestDownloadMP4JSONAndBinary`：JSON format/file_url + 二进制 `video/mp4`
+    - 新增 `TestDownloadInvalidFormatMentionsMP4`
+    - 上游失败文案改为「媒体下载失败」
+  - 验证：`go test ./internal/httpapi ./internal/download` 通过
+  - 下一步：T3 文档同步
 
 - [ ] T3 文档同步
   - 更新 `docs/BOT-INTEGRATION.md`：可下官方 MV 文件；示例

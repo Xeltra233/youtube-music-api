@@ -544,6 +544,90 @@ func TestDownloadBadRequest400(t *testing.T) {
 	assertCode(t, rr, "INVALID_REQUEST")
 }
 
+func TestDownloadMP4JSONAndBinary(t *testing.T) {
+	cfg := testCfg(t)
+	path := filepath.Join(cfg.DownloadDir, "SX_ViT4Ra7k.mp4")
+	data := []byte("ftypisomfake-mp4-bytes-0123456789")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token := "feedfacefeedfacefeedfacefeedface"
+	dl := &stubDownloader{result: &download.Result{
+		Path: path, Size: int64(len(data)), Cached: false, Token: token,
+		Format: "mp4", Bitrate: "0", VideoID: "SX_ViT4Ra7k",
+		Title: "Lemon", Artists: []string{"Kenshi Yonezu"},
+		DisplayName: "Lemon - Kenshi Yonezu", DurationSeconds: 257,
+		ExpiresIn: 3600, ContentType: "video/mp4", Filename: "Lemon.mp4",
+	}}
+	srv := newTestServer(t, cfg, nil, dl)
+	h := srv.Handler()
+
+	// JSON mode: format/file_url/content contract.
+	rr := doJSON(t, h, "POST", "/download?mode=json", map[string]any{
+		"video_id": "SX_ViT4Ra7k",
+		"format":   "mp4",
+	}, nil)
+	if rr.Code != 200 {
+		t.Fatalf("json status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if dl.lastReq.Format != "mp4" || dl.lastReq.VideoID != "SX_ViT4Ra7k" {
+		t.Fatalf("downloader req=%+v", dl.lastReq)
+	}
+	var body DownloadJSONBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Format != "mp4" || body.VideoID != "SX_ViT4Ra7k" {
+		t.Fatalf("json body=%+v", body)
+	}
+	if body.FileURL != "/file/"+token {
+		t.Fatalf("file_url=%q", body.FileURL)
+	}
+
+	// Binary mode: video content-type + disposition.
+	rr = doJSON(t, h, "POST", "/download", map[string]any{
+		"video_id": "SX_ViT4Ra7k",
+		"format":   "mp4",
+	}, nil)
+	if rr.Code != 200 {
+		t.Fatalf("binary status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "video/mp4") {
+		t.Fatalf("content-type=%q", ct)
+	}
+	if disp := rr.Header().Get("Content-Disposition"); !strings.Contains(disp, ".mp4") {
+		t.Fatalf("disposition=%q", disp)
+	}
+	if rr.Header().Get("X-Track-Video-Id") != "SX_ViT4Ra7k" {
+		t.Fatalf("x-track-video-id=%q", rr.Header().Get("X-Track-Video-Id"))
+	}
+	if rr.Body.String() != string(data) {
+		t.Fatalf("body len=%d", rr.Body.Len())
+	}
+}
+
+func TestDownloadInvalidFormatMentionsMP4(t *testing.T) {
+	cfg := testCfg(t)
+	// Use real downloader path via error injection: BadRequest from NormalizeFormat semantics.
+	dl := &stubDownloader{err: &download.BadRequestError{Reason: "format must be mp3, m4a, opus, or mp4"}}
+	srv := newTestServer(t, cfg, nil, dl)
+	rr := doJSON(t, srv.Handler(), "POST", "/download", map[string]any{
+		"video_id": "3NNhrqHZqlI",
+		"format":   "avi",
+	}, nil)
+	if rr.Code != 400 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	assertCode(t, rr, "INVALID_REQUEST")
+	var eb ErrorBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &eb); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ToLower(eb.Message), "mp4") {
+		t.Fatalf("message should mention mp4: %q", eb.Message)
+	}
+}
+
 func TestFileTokenAndRange(t *testing.T) {
 	cfg := testCfg(t)
 	path := filepath.Join(cfg.DownloadDir, "file.mp3")

@@ -101,7 +101,7 @@ func mapAndWriteError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, download.ErrExecFailed) {
-		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "音频下载失败（已自动重试）: "+trimErr(err), nil)
+		writeError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "媒体下载失败（已自动重试）: "+trimErr(err), nil)
 		return
 	}
 	if errors.Is(err, download.ErrNotFound) {
