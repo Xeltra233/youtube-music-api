@@ -19,12 +19,13 @@
   - 验证：`go test ./internal/httpapi ./internal/download` 通过
   - 下一步：T3 文档同步
 
-- [ ] T3 文档同步
-  - 更新 `docs/BOT-INTEGRATION.md`：可下官方 MV 文件；示例
-  - 更新 `docs/BOT-PARAMS.txt`：`mv/video/official` → `format=mp4` + official_video_id
-  - README 必要时一句
-  - 删除/改写“当前没有 MV 文件下载”表述
-  - 验证：字段名与代码一致
+- [x] T3 文档同步
+  - 完成：
+    - `BOT-INTEGRATION.md`：官方 MV 可 `format=mp4` 下载；方式 E 示例；去掉“不能下 MV 文件”
+    - `BOT-PARAMS.txt`：`mv/video/official` → `format=mp4` + `official_video_id`
+    - `README.md`：音频/视频分流一句
+  - 验证：文档含 `format=mp4` / `video/mp4`，旧“不提供整段 MV”表述已清除
+  - 下一步：T4 全量验证
 
 - [ ] T4 全量测试 + live 抽样（可降级）+ 收尾
   - `go test ./...`

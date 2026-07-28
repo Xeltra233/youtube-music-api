@@ -13,7 +13,7 @@
 >
 > 用户命令尾参（`mp3` / `m4a` / `opus` / `file` / `voice`）与 API 字段映射见 [`docs/BOT-PARAMS.txt`](docs/BOT-PARAMS.txt)。
 >
-> `/search` 结果额外返回官方 MV 字段：`official_video_id` / `official_video_url` / `has_official_video`（发官方视频用；下音频仍用 `video_id`）。
+> `/search` 结果额外返回官方 MV 字段：`official_video_id` / `official_video_url` / `has_official_video`。下音频用歌曲 `video_id` + `mp3/m4a/opus`；下官方 MV 文件用 `official_video_id` + `format=mp4`。
 
 ## 技术栈与选型
 

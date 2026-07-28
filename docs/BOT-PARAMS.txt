@@ -10,7 +10,7 @@ ytmusic-bridge / bot 参数约定
 规则（你已实现的 Task 2）：
 - 只认「最后一个独立单词」
 - 白名单（音频发送）：mp3 / m4a / opus / flac / file / voice
-- 可选扩展白名单（官方视频，仅 bot 侧，不传给本 API 的 format）：
+- 可选扩展白名单（官方视频，bot 侧识别后映射到 API format=mp4）：
     mv / video / official
 - 无参数时默认：voice
 - 歌名中间的格式词不剥离
@@ -36,10 +36,10 @@ ytmusic-bridge / bot 参数约定
       → delivery=file；format 用默认音频格式（建议 mp3，或读服务端配置）
 
   /music 晴天 mv
-      → 发官方音乐视频（见第 4.5 / 第 5 节）；不走 /download 音频
+      → delivery=video；调用 /download 用 official_video_id + format=mp4
 
   /music Lemon - Kenshi Yonezu official
-      → 同上，官方 MV 模式
+      → 同上，官方 MV 文件模式
 
 
 2. 两层概念：delivery vs format
@@ -47,15 +47,16 @@ ytmusic-bridge / bot 参数约定
 A) deliveryMode（只存在于 bot，不要传给本 API）
    - voice : 以「语音消息」发出（平台侧）
    - file  : 以「文件/音频文件」发出（平台侧）
-   - video : 以「官方音乐视频」发出（平台侧：视频消息或链接）
+   - video : 以「官方音乐视频」发出（平台侧：视频文件/视频消息；也可发链接兜底）
 
 B) format（要传给本 API 的 POST /download 字段）
    服务端当前支持：
      mp3  → Content-Type: audio/mpeg
      m4a  → Content-Type: audio/mp4
      opus → Content-Type: audio/ogg
+     mp4  → Content-Type: video/mp4   # 官方 MV / 视频文件
    服务端当前不支持：
-     flac → 会 400 INVALID_REQUEST（format must be mp3, m4a, or opus）
+     flac → 会 400 INVALID_REQUEST（format must be mp3, m4a, opus, or mp4）
 
 服务端默认（请求没带 format 时）：
   用环境变量 AUDIO_FORMAT，默认 mp3。
@@ -67,9 +68,10 @@ C) 官方视频字段（来自 POST /search 的 results[]，不是 /download 请
    has_official_video   true/false
 
    注意：
-   - video_id = 歌曲音轨，给 /download 下音频
-   - official_video_* = 官方 MV，给 bot 发视频/链接
-   - 不要把 official_video_id 默认塞进 /download（当前下载链路是音频）
+   - video_id = 歌曲音轨，给 /download 下音频（format=mp3/m4a/opus）
+   - official_video_id = 官方 MV，给 /download 下视频文件（format=mp4）
+   - official_video_url = 可选：不下载、直接发链接
+   - 不要把歌曲 video_id 当成官方 MV；也不要用 mp4 去下歌曲音轨（除非你明确要画面）
 
 
 3. bot → API 推荐映射
@@ -84,7 +86,7 @@ m4a               file            m4a
 opus              file            opus
 flac              file            （先不要调 API）提示用户暂不支持 flac
 mv / video / official
-                  video           （不调用 /download）
+                  video           mp4   # video_id 用 results[].official_video_id
 file mp3 等组合   以最后一个词为准；若最后是 file/voice 则只改 delivery
 
 说明：
@@ -133,8 +135,8 @@ Base URL 示例：
   }
 
   注意：
-  - format 填 bot 映射后的值（mp3/m4a/opus），不要写 voice/file
-  - 不要写死永远 mp3；用户要 m4a/opus 就传对应值
+  - format 填 bot 映射后的值（mp3/m4a/opus/mp4），不要写 voice/file/mv
+  - 不要写死永远 mp3；用户要 m4a/opus/mp4 就传对应值
   - 默认二进制响应；文件扩展名与 Content-Type 跟 format 走
 
 4.3 下载（只要元数据 + 二次取文件）
@@ -158,18 +160,27 @@ Base URL 示例：
   }
 
 
-4.5 发官方音乐视频（bot 侧，不新增下载 API）
+4.5 发官方音乐视频（用现有 /download + format=mp4）
 ------------------------------------------
 搜索拿到 results 后：
 
   item = results[用户选中的 index-1]
   if user wants official MV:    # 尾参 mv/video/official，或你自己的开关
-      if item.has_official_video:
-          sendVideoLink(item.official_video_url)
-          # 或平台支持时：sendVideoById(item.official_video_id)
-      else:
+      if not item.has_official_video:
           reply("这首没有找到官方音乐视频")
           # 可选：回退到音频 delivery=voice/file
+          return
+
+      # 推荐：下载 mp4 文件再发（视频消息/文件）
+      POST /download {
+        "video_id": item.official_video_id,
+        "format": "mp4"
+      }
+      # 或先 POST /download?mode=json 看 filesize / file_url
+      sendVideoFile(bytes)  # 平台视频消息或视频文件
+
+      # 备选：不占用下载队列，直接发链接
+      # sendVideoLink(item.official_video_url)
       return
 
   # 否则仍走原来的 /download 音频链路，使用 item.video_id / session index
@@ -189,17 +200,18 @@ Base URL 示例：
    mp3  → audio/mpeg
    m4a  → audio/mp4
    opus → audio/ogg
+   mp4  → video/mp4
 5) 若 JSON 模式：先读 body.format / body.file_url，再下载文件。
 6) deliveryMode=video（官方 MV）：
-   - 不要调用 /download
-   - 优先发 official_video_url
-   - 或按聊天平台能力用 official_video_id 发视频
+   - 调用 /download：video_id=official_video_id，format=mp4
+   - Content-Type 应为 video/mp4
+   - 视频通常更大：可先 mode=json 看 filesize；超限可改发 official_video_url
    - has_official_video=false 时提示并可选回退音频
 
 
 6. 错误与回退（bot 侧建议）
 --------------------------
-- 400 + format 相关：用户要了 flac 或不支持格式 → 提示「仅支持 mp3/m4a/opus」
+- 400 + format 相关：用户要了 flac 或不支持格式 → 提示「仅支持 mp3/m4a/opus/mp4」
 - 410 SESSION_EXPIRED：重新 /search
 - 409 AMBIGUOUS_NAME：让用户改用序号
 - 502/504：有限次重试或换一首
@@ -220,19 +232,22 @@ elif formatToken == voice or formatToken is empty:
     delivery = voice
     apiFormat = opus
 elif formatToken == flac:
-    reply("暂不支持 flac，请用 mp3/m4a/opus")
+    reply("暂不支持 flac，请用 mp3/m4a/opus/mp4")
     return
 elif formatToken in (mv, video, official):
     delivery = video
-    apiFormat = None   # 不调用 /download
-
-# 若 delivery == video:
-#   用 /search 结果的 official_video_url / official_video_id 发送
-#   没有则提示「没有官方视频」
+    apiFormat = mp4
 
 # 搜索或选歌后：
 if delivery == video:
-    use search result official_video_* fields
+    if not item.has_official_video:
+        reply("没有官方视频")
+        return
+    POST /download {
+      video_id: item.official_video_id,
+      format: "mp4"
+    }
+    sendVideoFile(bytes)  # 或先 mode=json 再取 file_url
 else:
     POST /download {
       session_id, index|name|video_id,

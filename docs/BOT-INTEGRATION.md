@@ -47,7 +47,7 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 
 - `/search` 的每条 `results[]` 会尽量附带官方 MV 字段：`official_video_id` / `official_video_url` / `has_official_video`。
 - **听歌/下音频** 仍用原来的 `video_id` + `/download`。
-- **发官方音乐视频** 用 `official_video_id` 或 `official_video_url`（本服务当前不提供整段 MV 文件下载）。
+- **发官方音乐视频** 优先：`official_video_id` + `POST /download`（`format=mp4`）拿视频文件再发送；也可直接发 `official_video_url` 链接。
 - 找不到官方视频时这三个字段仍返回，值为 `""` / `""` / `false`。
 
 ---
@@ -179,13 +179,19 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 | 字段 | 是什么 | bot 怎么用 |
 | --- | --- | --- |
 | `video_id` | 歌曲音轨 ID（YouTube Music songs 结果） | 传给 `POST /download` 下**音频** |
-| `official_video_id` / `official_video_url` | 官方 MV（优先 OMV） | **不要**默认拿去 `/download`；用来发视频消息 / 发链接 / 打开官方 MV |
+| `official_video_id` | 官方 MV ID（优先 OMV） | 传给 `POST /download` 且 **`format=mp4`**，下载视频文件 |
+| `official_video_url` | 官方 MV 链接 | 平台不方便传文件时可直接发链接 |
 
 推荐 bot 行为：
 
 1. 用户要听歌 / 下音频：继续 `session_id + index/name` 或 `video_id` → `/download`
 2. 用户要官方 MV（例如命令尾参 `mv` / `video` / `官方`，由 bot 自己解析）：
-   - 若 `has_official_video == true`：直接发 `official_video_url`，或按平台能力用 `official_video_id` 发视频
+   - 若 `has_official_video == true`：
+     ```json
+     {"video_id": "<official_video_id>", "format": "mp4"}
+     ```
+     对 `POST /download`（或 `?mode=json` 先看 `filesize` 再取 `file_url`），拿到 mp4 后以视频文件/视频消息发出
+   - 也可以直接发 `official_video_url`（省流量、不占下载队列）
    - 若为 `false`：提示「没有找到官方视频」，可回退到音频或普通结果
 3. 旧 bot 不认识新字段时，可忽略；JSON 解析请兼容未知字段
 
@@ -193,11 +199,11 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 
 - 服务端会并行请求 songs + videos，再按标题/艺人相似度匹配；匹配不到就留空，**不报错**。
 - videos 上游失败时：主搜索仍 200，官方视频三字段全部为空。
-- 当前 **没有**「下载官方 MV 成 mp4 文件」接口；发官方视频靠 ID/URL。
+- 视频文件通常比音频大，更容易触发 `413 FILE_TOO_LARGE`；建议先 `?mode=json` 看 `filesize`。
 
 ---
 
-## 3. `POST /download` 下载并取回音频
+## 3. `POST /download` 下载并取回音频 / 视频
 
 ### 请求
 
@@ -215,6 +221,9 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 
 // 方式 D：指定音频格式
 {"video_id": "3NNhrqHZqlI", "format": "m4a"}
+
+// 方式 E：官方 MV 视频文件（用 search 返回的 official_video_id）
+{"video_id": "SX_r8WxC3jY", "format": "mp4"}
 ```
 
 | 字段 | 类型 | 说明 |
@@ -223,15 +232,15 @@ bot 侧只要接 `/search` → `/download` 就是完整链路。
 | `index` | int | 1-based，就是 `/search` 返回的 `index` |
 | `name` | string | 与 `display_name` 比对：先精确，再忽略大小写/空白，再唯一模糊。命中多条返回 `409` 并附候选清单 |
 | `video_id` | string | 直接指定，忽略 session |
-| `format` | string | `mp3`（默认）/ `m4a` / `opus` |
+| `format` | string | 音频：`mp3`（默认）/ `m4a` / `opus`；视频：`mp4` |
 
-### 响应（默认：音频二进制）
+### 响应（默认：媒体二进制）
 
-`200`，body 就是音频文件本身，可直接转发给聊天平台。
+`200`，body 就是文件本身，可直接转发给聊天平台。
 
 | 响应头 | 示例 | 用途 |
 | --- | --- | --- |
-| `Content-Type` | `audio/mpeg` | — |
+| `Content-Type` | `audio/mpeg` 或 `video/mp4` | 随 format 变化 |
 | `Content-Length` | `6148269` | 上传前校验大小 |
 | `Content-Disposition` | `attachment; filename*=UTF-8''Lemon.mp3` | 文件名（UTF-8 编码，中文安全） |
 | `X-Track-Title` | `Lemon`（URL 编码） | 发消息时带标题 |
@@ -330,7 +339,7 @@ bot 启动时先打这个，确认对接服务活着，并确认 `ytdlp` 字段�
 - [ ] 传 `min_score`（建议 `0.35`），`total == 0` 时提示「没搜到」
 - [ ] 把 `results` 渲染成 `index. display_name (duration)` 列表
 - [ ] 若支持「发官方 MV」：读 `has_official_video` / `official_video_url`（或 `official_video_id`）
-- [ ] 切记：`/download` 继续用 `video_id`，不要误用 `official_video_id` 当下音频 ID（除非你明确知道平台/链路支持）
+- [ ] 官方 MV 文件：`official_video_id` + `format=mp4` 调 `/download`；下音频仍用歌曲 `video_id` + 音频 format
 - [ ] 每个会话存 `session_id`（含过期时间），别用全局变量
 - [ ] 用户回复纯数字走 `index`；回复文字走 `name`
 - [ ] 处理 `410`（过期）、`409`（同名歧义）、`413`（太大）三个高频错误
