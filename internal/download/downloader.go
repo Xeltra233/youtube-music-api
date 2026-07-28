@@ -226,11 +226,20 @@ func (d *Downloader) downloadOnce(ctx context.Context, req Request, videoID, for
 	if d.cfg.CookiesDir != "" && cookieFile != "" {
 		_ = cookies.RefreshDropIns(d.cfg.CookiesDir, cookieFile)
 	}
+	// yt-dlp rewrites --cookies in place. Always feed a snapshot so a real
+	// login jar is not replaced with anonymous visitor cookies.
+	cookieForYtdlp := cookieFile
+	if cookieFile != "" {
+		if snap, cleanup, serr := cookies.SnapshotForYtdlp(cookieFile); serr == nil && snap != "" {
+			cookieForYtdlp = snap
+			defer cleanup()
+		}
+	}
 	opt := YtdlpOptions{
 		YtdlpPath:      d.cfg.YtdlpPath,
 		FFmpegLocation: ffmpegLoc,
 		Proxy:          d.cfg.Proxy,
-		CookiesFile:    cookieFile,
+		CookiesFile:    cookieForYtdlp,
 		Format:         format,
 		Bitrate:        bitrate,
 		OutputPath:     outTemplate,

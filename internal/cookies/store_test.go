@@ -218,3 +218,66 @@ func TestRefreshDropInsOnUploadKeepsLater(t *testing.T) {
 		t.Fatal("uploaded drop-in should be removed after promote")
 	}
 }
+
+func TestSnapshotForYtdlpDoesNotTouchStable(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, StableFileName)
+	body := sampleNetscape(true)
+	if err := os.WriteFile(stable, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, cleanup, err := SnapshotForYtdlp(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap == "" || snap == stable {
+		t.Fatalf("expected temp snapshot, got %q", snap)
+	}
+	// Simulate yt-dlp rewriting the cookie file to anonymous visitor jar.
+	anon := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tPREF\thl=en\n"
+	if err := os.WriteFile(snap, []byte(anon), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitSnapshotIfBetter(snap, stable); err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	after, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("stable login jar must not be overwritten by anonymous snapshot")
+	}
+	if FileExistsNonEmpty(snap) {
+		t.Fatal("snapshot temp should be cleaned")
+	}
+}
+
+func TestCommitSnapshotAllowsUpgradeFromAnonymous(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, StableFileName)
+	anon := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tPREF\thl=en\n"
+	login := sampleNetscape(true)
+	if err := os.WriteFile(stable, []byte(anon), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, "tmp.txt")
+	if err := os.WriteFile(tmp, []byte(login), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitSnapshotIfBetter(tmp, stable); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "LOGIN_INFO") {
+		t.Fatalf("anonymous stable should upgrade to login jar, got %q", got)
+	}
+}

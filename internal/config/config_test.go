@@ -28,6 +28,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AudioFormat != "mp3" || cfg.AudioBitrate != "192" {
 		t.Errorf("音频默认值错误: %s/%s", cfg.AudioFormat, cfg.AudioBitrate)
 	}
+	if cfg.MaxFilesizeMB != 500 {
+		t.Errorf("MaxFilesizeMB 默认应为 500（官方 MV），实际 %d", cfg.MaxFilesizeMB)
+	}
 	if !filepath.IsAbs(cfg.DownloadDir) {
 		t.Errorf("DownloadDir 应为绝对路径，实际 %s", cfg.DownloadDir)
 	}

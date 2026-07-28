@@ -41,10 +41,29 @@ func RunKeepAliveLoop(ctx context.Context, opt KeepAliveOptions) {
 			log.Printf("cookies keepalive: waiting for file %s", opt.CookiesFile)
 			return
 		}
-		if err := KeepAliveOnce(ctx, opt); err != nil {
+		// Never let yt-dlp rewrite the stable jar in place.
+		snap, cleanup, err := SnapshotForYtdlp(opt.CookiesFile)
+		if err != nil {
+			log.Printf("cookies keepalive: snapshot: %v", err)
+			return
+		}
+		if snap == "" {
+			log.Printf("cookies keepalive: waiting for file %s", opt.CookiesFile)
+			return
+		}
+		runOpt := opt
+		runOpt.CookiesFile = snap
+		if err := KeepAliveOnce(ctx, runOpt); err != nil {
+			cleanup()
 			log.Printf("cookies keepalive: %v", err)
 			return
 		}
+		if err := CommitSnapshotIfBetter(snap, opt.CookiesFile); err != nil {
+			cleanup()
+			log.Printf("cookies keepalive: commit: %v", err)
+			return
+		}
+		cleanup()
 		log.Printf("cookies keepalive: refreshed %s", opt.CookiesFile)
 	}
 

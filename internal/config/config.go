@@ -90,13 +90,14 @@ func Load(envFile string) (*Config, error) {
 		CookiesKeepAlive:       l.bool("COOKIES_KEEPALIVE", false),
 		CookiesKeepAliveEvery:  l.seconds("COOKIES_KEEPALIVE_INTERVAL_SECONDS", 6*time.Hour),
 		MaxConcurrentDownloads: l.int("MAX_CONCURRENT_DOWNLOADS", 2),
-		MaxFilesizeMB:          l.int("MAX_FILESIZE_MB", 50),
-		DownloadTimeout:        l.seconds("DOWNLOAD_TIMEOUT_SECONDS", 300*time.Second),
-		SessionTTL:             l.seconds("SESSION_TTL_SECONDS", 30*time.Minute),
-		CacheTTL:               l.seconds("CACHE_TTL_SECONDS", 24*time.Hour),
-		CacheMaxTotalMB:        l.int("CACHE_MAX_TOTAL_MB", 2048),
-		CleanupInterval:        l.seconds("CLEANUP_INTERVAL_SECONDS", 5*time.Minute),
-		SearchTimeout:          l.seconds("SEARCH_TIMEOUT_SECONDS", 15*time.Second),
+		// Official music videos are often >50MB; default high enough for common 1080p MVs.
+		MaxFilesizeMB:   l.int("MAX_FILESIZE_MB", 500),
+		DownloadTimeout: l.seconds("DOWNLOAD_TIMEOUT_SECONDS", 300*time.Second),
+		SessionTTL:      l.seconds("SESSION_TTL_SECONDS", 30*time.Minute),
+		CacheTTL:        l.seconds("CACHE_TTL_SECONDS", 24*time.Hour),
+		CacheMaxTotalMB: l.int("CACHE_MAX_TOTAL_MB", 2048),
+		CleanupInterval: l.seconds("CLEANUP_INTERVAL_SECONDS", 5*time.Minute),
+		SearchTimeout:   l.seconds("SEARCH_TIMEOUT_SECONDS", 15*time.Second),
 	}
 	if err := l.err(); err != nil {
 		return nil, err

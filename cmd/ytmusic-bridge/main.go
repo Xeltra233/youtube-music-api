@@ -139,14 +139,30 @@ func run() error {
 				log.Printf("cookies keepalive: waiting for file in %s", cfg.CookiesDir)
 				return
 			}
+			snap, cleanup, err := cookies.SnapshotForYtdlp(stable)
+			if err != nil {
+				log.Printf("cookies keepalive: snapshot: %v", err)
+				return
+			}
+			if snap == "" {
+				log.Printf("cookies keepalive: waiting for file in %s", cfg.CookiesDir)
+				return
+			}
 			if err := cookies.KeepAliveOnce(ctx, cookies.KeepAliveOptions{
-				CookiesFile: stable,
+				CookiesFile: snap,
 				YtdlpPath:   cfg.YtdlpPath,
 				Proxy:       cfg.Proxy,
 			}); err != nil {
+				cleanup()
 				log.Printf("cookies keepalive: %v", err)
 				return
 			}
+			if err := cookies.CommitSnapshotIfBetter(snap, stable); err != nil {
+				cleanup()
+				log.Printf("cookies keepalive: commit: %v", err)
+				return
+			}
+			cleanup()
 			log.Printf("cookies keepalive: refreshed %s", stable)
 		}
 		// 启动后短延迟先跑一次
