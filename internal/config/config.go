@@ -24,6 +24,12 @@ type Config struct {
 	Port   int
 	APIKey string
 
+	// Admin 上传面板（独立于 bot API_KEY）
+	// AdminPassword 为空时不启用 /admin 与 /api/admin。
+	AdminPassword      string
+	AdminSessionSecret string
+	AdminSessionTTL    time.Duration
+
 	// 搜索
 	DefaultLimit int
 	MaxLimit     int
@@ -67,6 +73,9 @@ func Load(envFile string) (*Config, error) {
 		Host:                   l.str("HOST", "127.0.0.1"),
 		Port:                   l.port(8787),
 		APIKey:                 l.str("API_KEY", ""),
+		AdminPassword:          l.str("ADMIN_PASSWORD", ""),
+		AdminSessionSecret:     l.str("ADMIN_SESSION_SECRET", ""),
+		AdminSessionTTL:        l.seconds("ADMIN_SESSION_TTL_SECONDS", 12*time.Hour),
 		DefaultLimit:           l.int("DEFAULT_LIMIT", 10),
 		MaxLimit:               l.int("MAX_LIMIT", MinimumMaxLimit),
 		MinScore:               l.float("MIN_SCORE", 0.0),
@@ -168,6 +177,15 @@ func (c *Config) normalize() error {
 		c.CookiesKeepAliveEvery = time.Minute
 	}
 
+	c.AdminPassword = strings.TrimSpace(c.AdminPassword)
+	c.AdminSessionSecret = strings.TrimSpace(c.AdminSessionSecret)
+	if c.AdminSessionTTL < 5*time.Minute {
+		c.AdminSessionTTL = 5 * time.Minute
+	}
+	if c.AdminSessionTTL > 7*24*time.Hour {
+		c.AdminSessionTTL = 7 * 24 * time.Hour
+	}
+
 	abs, err := filepath.Abs(c.DownloadDir)
 	if err != nil {
 		return fmt.Errorf("DOWNLOAD_DIR 无法解析为绝对路径: %w", err)
@@ -178,6 +196,11 @@ func (c *Config) normalize() error {
 		c.CookiesDir = absDir
 	}
 	return nil
+}
+
+// AdminEnabled 表示管理上传端是否可用。
+func (c *Config) AdminEnabled() bool {
+	return c != nil && strings.TrimSpace(c.AdminPassword) != ""
 }
 
 // Addr 返回 http.Server 监听地址。

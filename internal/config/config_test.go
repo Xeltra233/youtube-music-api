@@ -31,6 +31,12 @@ func TestLoadDefaults(t *testing.T) {
 	if !filepath.IsAbs(cfg.DownloadDir) {
 		t.Errorf("DownloadDir 应为绝对路径，实际 %s", cfg.DownloadDir)
 	}
+	if cfg.AdminPassword != "" || cfg.AdminEnabled() {
+		t.Errorf("默认不应启用 admin，password=%q", cfg.AdminPassword)
+	}
+	if cfg.AdminSessionTTL != 12*time.Hour {
+		t.Errorf("AdminSessionTTL 默认应为 12h，实际 %v", cfg.AdminSessionTTL)
+	}
 }
 
 // R5：配置不得把上限压到 20 以下，服务端起码要能返回 20 条。
@@ -314,11 +320,48 @@ func TestByteHelpers(t *testing.T) {
 	}
 }
 
+func TestAdminConfigFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "s3cret")
+	t.Setenv("ADMIN_SESSION_SECRET", "sess-secret")
+	t.Setenv("ADMIN_SESSION_TTL_SECONDS", "600")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if !cfg.AdminEnabled() {
+		t.Fatal("设置 ADMIN_PASSWORD 后应启用 admin")
+	}
+	if cfg.AdminPassword != "s3cret" {
+		t.Fatalf("AdminPassword=%q", cfg.AdminPassword)
+	}
+	if cfg.AdminSessionSecret != "sess-secret" {
+		t.Fatalf("AdminSessionSecret=%q", cfg.AdminSessionSecret)
+	}
+	if cfg.AdminSessionTTL != 10*time.Minute {
+		t.Fatalf("AdminSessionTTL=%v", cfg.AdminSessionTTL)
+	}
+}
+
+func TestAdminSessionTTLFloor(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "x")
+	t.Setenv("ADMIN_SESSION_TTL_SECONDS", "30") // < 5m
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if cfg.AdminSessionTTL != 5*time.Minute {
+		t.Fatalf("TTL 下限应为 5m，实际 %v", cfg.AdminSessionTTL)
+	}
+}
+
 // clearEnv 清空本包会读取的环境变量，保证用例之间互不干扰。
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"HOST", "PORT", "WEB_PORT", "HTTP_PORT", "API_KEY",
+		"ADMIN_PASSWORD", "ADMIN_SESSION_SECRET", "ADMIN_SESSION_TTL_SECONDS",
 		"DEFAULT_LIMIT", "MAX_LIMIT", "MIN_SCORE",
 		"DOWNLOAD_DIR", "AUDIO_FORMAT", "AUDIO_BITRATE", "FFMPEG_LOCATION", "YTDLP_PATH",
 		"PROXY", "COOKIES_FILE", "COOKIES_DIR", "COOKIES_KEEPALIVE", "COOKIES_KEEPALIVE_INTERVAL_SECONDS",
