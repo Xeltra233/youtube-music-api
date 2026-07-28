@@ -65,7 +65,8 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}()
 
 		// optional API key
-		if key := strings.TrimSpace(s.apiKey); key != "" {
+		// Admin UI/API uses its own session cookie; do not require bot API key.
+		if key := strings.TrimSpace(s.apiKey); key != "" && !isAdminPath(r.URL.Path) {
 			got := strings.TrimSpace(r.Header.Get("X-API-Key"))
 			if got == "" || got != key {
 				writeError(sw, http.StatusUnauthorized, "UNAUTHORIZED", "缺少或错误的 X-API-Key", nil)
@@ -75,6 +76,11 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(sw, r)
 	})
+}
+
+func isAdminPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/api/admin")
 }
 
 // clientIP extracts the remote host without the port.

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xeltra/ytmusic-bridge/internal/adminauth"
 	"github.com/xeltra/ytmusic-bridge/internal/config"
 	"github.com/xeltra/ytmusic-bridge/internal/download"
 	"github.com/xeltra/ytmusic-bridge/internal/search"
@@ -47,6 +48,7 @@ type Server struct {
 	apiKey       string
 	ytdlpVersion string
 	now          func() time.Time
+	admin        *adminauth.Manager
 }
 
 // Options configures a Server.
@@ -57,6 +59,8 @@ type Options struct {
 	Downloader   Downloader
 	YtdlpVersion string // optional; reported by /healthz
 	Now          func() time.Time
+	// Admin optional; when nil, built from Config admin fields.
+	Admin *adminauth.Manager
 }
 
 // New builds an HTTP server. cfg/searcher/sessions/downloader are required.
@@ -77,6 +81,15 @@ func New(opts Options) (*Server, error) {
 	if now == nil {
 		now = time.Now
 	}
+	admin := opts.Admin
+	if admin == nil {
+		admin = adminauth.New(adminauth.Options{
+			Password:      opts.Config.AdminPassword,
+			SessionSecret: opts.Config.AdminSessionSecret,
+			TTL:           opts.Config.AdminSessionTTL,
+			Now:           now,
+		})
+	}
 	return &Server{
 		cfg:          opts.Config,
 		searcher:     opts.Searcher,
@@ -85,6 +98,7 @@ func New(opts Options) (*Server, error) {
 		apiKey:       opts.Config.APIKey,
 		ytdlpVersion: strings.TrimSpace(opts.YtdlpVersion),
 		now:          now,
+		admin:        admin,
 	}, nil
 }
 
@@ -95,6 +109,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /search", s.handleSearch)
 	mux.HandleFunc("POST /download", s.handleDownload)
 	mux.HandleFunc("GET /file/{token}", s.handleFile)
+	// Admin auth APIs (cookie session; independent from bot API_KEY).
+	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
+	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
+	mux.HandleFunc("GET /api/admin/check-auth", s.handleAdminCheckAuth)
 	return s.withMiddleware(mux)
 }
 
