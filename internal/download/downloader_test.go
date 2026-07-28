@@ -91,6 +91,8 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, env []
 		for i, a := range args {
 			if a == "--audio-format" && i+1 < len(args) {
 				format = args[i+1]
+			} else if a == "--merge-output-format" && i+1 < len(args) {
+				format = args[i+1]
 			}
 		}
 		path = strings.ReplaceAll(path, "%(ext)s", format)
@@ -162,9 +164,99 @@ func TestNormalizeFormat(t *testing.T) {
 	if err != nil || f != "m4a" {
 		t.Fatalf("m4a: got %q %v", f, err)
 	}
+	f, err = NormalizeFormat("MP4", "mp3")
+	if err != nil || f != "mp4" {
+		t.Fatalf("mp4: got %q %v", f, err)
+	}
 	_, err = NormalizeFormat("wav", "mp3")
 	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("want bad request, got %v", err)
+	}
+	if !IsVideoFormat("mp4") || IsVideoFormat("mp3") {
+		t.Fatal("IsVideoFormat mismatch")
+	}
+	if !IsAudioFormat("opus") || IsAudioFormat("mp4") {
+		t.Fatal("IsAudioFormat mismatch")
+	}
+}
+
+func TestBuildYtdlpArgsVideoVsAudio(t *testing.T) {
+	audio := buildYtdlpArgs(YtdlpOptions{
+		Format: "mp3", Bitrate: "192", OutputPath: "x.%(ext)s", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+	})
+	joinedAudio := strings.Join(audio, " ")
+	if !strings.Contains(joinedAudio, "--extract-audio") {
+		t.Fatalf("audio args missing extract-audio: %v", audio)
+	}
+	if strings.Contains(joinedAudio, "--merge-output-format") {
+		t.Fatalf("audio args should not merge video: %v", audio)
+	}
+	if !strings.Contains(joinedAudio, "ba/bestaudio/best") {
+		t.Fatalf("audio selector missing: %v", audio)
+	}
+
+	video := buildYtdlpArgs(YtdlpOptions{
+		Format: "mp4", Bitrate: "0", OutputPath: "y.%(ext)s", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+	})
+	joinedVideo := strings.Join(video, " ")
+	if strings.Contains(joinedVideo, "--extract-audio") {
+		t.Fatalf("video args must not extract-audio: %v", video)
+	}
+	if !strings.Contains(joinedVideo, "--merge-output-format") || !strings.Contains(joinedVideo, "mp4") {
+		t.Fatalf("video args missing merge mp4: %v", video)
+	}
+	if !strings.Contains(joinedVideo, "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b") {
+		t.Fatalf("video selector missing: %v", video)
+	}
+}
+
+func TestDownloadMP4Video(t *testing.T) {
+	cfg := testConfig(t)
+	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
+	if err := os.WriteFile(fakeBin, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.YtdlpPath = fakeBin
+	var sawExtract bool
+	var sawMerge bool
+	fake := &fakeRunner{
+		writeSize: 4096,
+		onCall: func(_ string, args []string) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "--extract-audio") {
+				sawExtract = true
+			}
+			if strings.Contains(joined, "--merge-output-format") {
+				sawMerge = true
+			}
+		},
+	}
+	d, err := New(cfg, Options{Runner: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Download(context.Background(), Request{
+		VideoID: "SX_ViT4Ra7k",
+		Format:  "mp4",
+		Title:   "Lemon Official",
+	})
+	if err != nil {
+		t.Fatalf("Download mp4: %v", err)
+	}
+	if res.Format != "mp4" || res.ContentType != "video/mp4" {
+		t.Fatalf("result meta: %+v", res)
+	}
+	if !strings.HasSuffix(res.Filename, ".mp4") {
+		t.Fatalf("filename=%q", res.Filename)
+	}
+	if sawExtract {
+		t.Fatal("mp4 download used extract-audio")
+	}
+	if !sawMerge {
+		t.Fatal("mp4 download missing merge-output-format")
+	}
+	if _, err := os.Stat(res.Path); err != nil {
+		t.Fatalf("missing file: %v", err)
 	}
 }
 

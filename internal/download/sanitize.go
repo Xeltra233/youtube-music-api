@@ -37,10 +37,25 @@ func NormalizeFormat(format, fallback string) (string, error) {
 		format = "mp3"
 	}
 	switch format {
-	case "mp3", "m4a", "opus":
+	case "mp3", "m4a", "opus", "mp4":
 		return format, nil
 	default:
-		return "", &BadRequestError{Reason: "format must be mp3, m4a, or opus"}
+		return "", &BadRequestError{Reason: "format must be mp3, m4a, opus, or mp4"}
+	}
+}
+
+// IsVideoFormat reports whether format is a video container (currently mp4 only).
+func IsVideoFormat(format string) bool {
+	return strings.EqualFold(strings.TrimSpace(format), "mp4")
+}
+
+// IsAudioFormat reports whether format is an audio extract target.
+func IsAudioFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "mp3", "m4a", "opus":
+		return true
+	default:
+		return false
 	}
 }
 

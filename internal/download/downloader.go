@@ -109,9 +109,12 @@ func (d *Downloader) Download(ctx context.Context, req Request) (*Result, error)
 	if err != nil {
 		return nil, err
 	}
-	bitrate := d.cfg.AudioBitrate
-	if bitrate == "" {
-		bitrate = "192"
+	bitrate := "0"
+	if !IsVideoFormat(format) {
+		bitrate = d.cfg.AudioBitrate
+		if bitrate == "" {
+			bitrate = "192"
+		}
 	}
 
 	// 缓存命中：不占信号量、不跑 yt-dlp。
@@ -369,6 +372,8 @@ func contentTypeFor(format string) string {
 		return "audio/mp4"
 	case "opus":
 		return "audio/ogg"
+	case "mp4":
+		return "video/mp4"
 	default:
 		return "application/octet-stream"
 	}

@@ -136,15 +136,10 @@ func buildYtdlpArgs(opt YtdlpOptions) []string {
 }
 
 func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
-	// 输出模板指向最终路径，但我们会先写到临时文件再 rename；
-	// 这里 OutputPath 已是 temp 路径。
 	args := []string{
 		"--no-playlist",
 		"--no-progress",
 		"--newline",
-		"--extract-audio",
-		"--audio-format", opt.Format,
-		"--audio-quality", opt.Bitrate + "K",
 		"--output", opt.OutputPath,
 		// 避免写 description 等附属文件
 		"--no-write-playlist-metafiles",
@@ -164,6 +159,16 @@ func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 		"--no-cache-dir",
 		"--prefer-ffmpeg",
 	}
+	if IsVideoFormat(opt.Format) {
+		// 官方 MV / 普通视频：合并为 mp4 容器，不抽音频。
+		args = append(args, "--merge-output-format", "mp4")
+	} else {
+		args = append(args,
+			"--extract-audio",
+			"--audio-format", opt.Format,
+			"--audio-quality", opt.Bitrate+"K",
+		)
+	}
 	if opt.FFmpegLocation != "" {
 		args = append(args, "--ffmpeg-location", opt.FFmpegLocation)
 	}
@@ -181,8 +186,13 @@ func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 	if len(extra) > 0 {
 		args = append(args, extra...)
 	}
-	// spotube / 实测：ba 优先，再回退 bestaudio/best。
-	args = append(args, "-f", "ba/bestaudio/best")
+	if IsVideoFormat(opt.Format) {
+		// 优先可合并的 mp4 视频+音轨，再回退任意 best。
+		args = append(args, "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b")
+	} else {
+		// spotube / 实测：ba 优先，再回退 bestaudio/best。
+		args = append(args, "-f", "ba/bestaudio/best")
+	}
 	args = append(args, "--", opt.URL)
 	return args
 }
@@ -275,8 +285,11 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 			}
 		}
 
-		// 先走 spotube 同类「一键取流+转码」；失败再 raw 下载 + 本地 ffmpeg。
-		execErr := runYtdlpAttempt(ctx, runner, path, buildYtdlpArgsWithExtra(opt, st.extra), st.name+"|extract")
+		mode := "extract"
+		if IsVideoFormat(opt.Format) {
+			mode = "video"
+		}
+		execErr := runYtdlpAttempt(ctx, runner, path, buildYtdlpArgsWithExtra(opt, st.extra), st.name+"|"+mode)
 		if execErr == nil {
 			return nil
 		}
@@ -285,14 +298,16 @@ func runYtdlp(ctx context.Context, runner CommandRunner, opt YtdlpOptions) error
 			return execErr
 		}
 
-		// raw 回退：先下原始音轨，再 ffmpeg 转目标格式（更接近 spotube 只取流）。
-		rawErr := runYtdlpRawThenConvert(ctx, runner, path, opt, st.extra, st.name)
-		if rawErr == nil {
-			return nil
-		}
-		last = rawErr
-		if !isTransientYtdlpError(rawErr) {
-			return rawErr
+		// 音频才走 raw→ffmpeg 旁路；视频失败只换 client 重试。
+		if !IsVideoFormat(opt.Format) {
+			rawErr := runYtdlpRawThenConvert(ctx, runner, path, opt, st.extra, st.name)
+			if rawErr == nil {
+				return nil
+			}
+			last = rawErr
+			if !isTransientYtdlpError(rawErr) {
+				return rawErr
+			}
 		}
 	}
 	if last == nil {
