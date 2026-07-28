@@ -29,7 +29,7 @@
       try {
         const r = await fetch("/api/admin/check-auth", { credentials: "same-origin" });
         const j = await r.json();
-        if (j && j.authenticated) location.replace("./");
+        if (j && j.authenticated) location.replace("./index.html");
       } catch (_) {}
     }
     document.getElementById("togglePw").addEventListener("click", () => {
@@ -59,7 +59,7 @@
           btn.disabled = false;
           return;
         }
-        location.replace("./");
+        location.replace("./index.html");
       } catch (_) {
         err.textContent = "网络错误，请重试";
         btn.disabled = false;

@@ -13,13 +13,13 @@
   async function ensureAuth() {
     const { r, j } = await api("/api/admin/check-auth");
     if (!r.ok) {
-      // network/server issue: stay and show error via refreshStatus
       return { ok: false, reason: "error" };
     }
     if (j.enabled === false) {
       return { ok: false, reason: "disabled" };
     }
     if (!j.authenticated) {
+      location.replace("./login.html");
       return { ok: false, reason: "unauthenticated" };
     }
     return { ok: true };
@@ -51,19 +51,10 @@
   async function refreshStatus() {
     const { r, j } = await api("/api/admin/cookies/status");
     if (r.status === 401) {
-      $("stPresent").textContent = "未登录";
-      $("stPresent").style.color = "var(--danger)";
-      $("stFile").textContent = "-";
-      $("stSize").textContent = "-";
-      $("stMod").textContent = "-";
-      $("stKeep").textContent = "-";
-      $("stCount").textContent = "-";
-      $("uploadErr").textContent = "未登录或会话过期，请先登录";
-      $("uploadBtn").disabled = true;
+      location.replace("./login.html");
       return;
     }
     if (!r.ok) throw new Error((j.error && j.error.message) || "状态获取失败");
-    $("uploadErr").textContent = "";
     renderStatus(j);
   }
 
@@ -113,17 +104,10 @@
       if (auth.reason === "disabled") {
         $("uploadErr").textContent = "管理端未启用：请设置环境变量 ADMIN_PASSWORD";
         $("stPresent").textContent = "未启用";
-      } else if (auth.reason === "unauthenticated") {
-        // Keep upload page visible for layout; offer login CTA via error text.
-        $("uploadErr").innerHTML = '未登录。请先打开 <a href=\"./login.html\" style=\"color:var(--accent)\">登录页</a>';
-        $("stPresent").textContent = "未登录";
-        $("stPresent").style.color = "var(--danger)";
-      } else {
-        $("uploadErr").textContent = "无法检查登录状态";
       }
-    } else {
-      await refreshStatus();
+      return;
     }
+    await refreshStatus();
 
     const dz = $("dropzone");
     const input = $("fileInput");

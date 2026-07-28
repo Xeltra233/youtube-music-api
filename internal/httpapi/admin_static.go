@@ -16,18 +16,23 @@ func (s *Server) mountAdminStatic(mux *http.ServeMux) {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 
-	// /admin and /admin/ -> index.html (upload page)
+	// /admin and /admin/ -> login page first.
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/admin/", http.StatusFound)
+		http.Redirect(w, r, "/admin/login.html", http.StatusFound)
 	})
 	mux.HandleFunc("GET /admin/{$}", func(w http.ResponseWriter, r *http.Request) {
-		s.serveAdminAsset(w, r, sub, "index.html")
+		http.Redirect(w, r, "/admin/login.html", http.StatusFound)
 	})
 	mux.HandleFunc("GET /admin/{path...}", func(w http.ResponseWriter, r *http.Request) {
 		// Strip /admin/ prefix for FS lookup.
 		p := strings.TrimPrefix(r.URL.Path, "/admin/")
 		if p == "" {
-			s.serveAdminAsset(w, r, sub, "index.html")
+			http.Redirect(w, r, "/admin/login.html", http.StatusFound)
+			return
+		}
+		// Serve known HTML entrypoints directly to avoid FileServer trailing-slash 301.
+		if p == "login.html" || p == "index.html" {
+			s.serveAdminAsset(w, r, sub, p)
 			return
 		}
 		// Prevent path tricks; FS open is rooted.

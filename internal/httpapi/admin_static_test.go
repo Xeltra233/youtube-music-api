@@ -32,11 +32,20 @@ func TestAdminStaticPagesServed(t *testing.T) {
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/admin/", nil)
 	h.ServeHTTP(rr, req)
-	if rr.Code != 200 {
-		t.Fatalf("admin/ status=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusFound {
+		t.Fatalf("admin/ should redirect to login, status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "Cookie 上传") && !strings.Contains(rr.Body.String(), "dropzone") {
-		t.Fatalf("upload page missing markers")
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "login.html") {
+		t.Fatalf("admin/ redirect location=%q", loc)
+	}
+
+	// upload page still available at index.html
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/admin/index.html", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 || (!strings.Contains(rr.Body.String(), "Cookie 上传") && !strings.Contains(rr.Body.String(), "dropzone")) {
+		t.Fatalf("upload page missing markers status=%d", rr.Code)
 	}
 
 	// css
