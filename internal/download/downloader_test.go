@@ -208,6 +208,10 @@ func TestBuildYtdlpArgsVideoVsAudio(t *testing.T) {
 	if !strings.Contains(joinedVideo, "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b") {
 		t.Fatalf("video selector missing: %v", video)
 	}
+	// yt-dlp >= 2026.07 hard-fails on deprecated --prefer-ffmpeg.
+	if strings.Contains(joinedAudio, "--prefer-ffmpeg") || strings.Contains(joinedVideo, "--prefer-ffmpeg") {
+		t.Fatal("args must not include deprecated --prefer-ffmpeg")
+	}
 }
 
 func TestDownloadMP4Video(t *testing.T) {

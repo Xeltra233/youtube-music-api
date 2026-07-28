@@ -157,7 +157,6 @@ func buildYtdlpArgsWithExtra(opt YtdlpOptions, extra []string) []string {
 		"--socket-timeout", "20",
 		"--geo-bypass",
 		"--no-cache-dir",
-		"--prefer-ffmpeg",
 	}
 	if IsVideoFormat(opt.Format) {
 		// 官方 MV / 普通视频：合并为 mp4 容器，不抽音频。
