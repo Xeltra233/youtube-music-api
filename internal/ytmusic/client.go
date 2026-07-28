@@ -21,9 +21,32 @@ const (
 	defaultAPIKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
 	// songs filter: EgWKAQ + II + AWoMEA4QChADEAQQCRAF
 	songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
-	defaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-	defaultOrigin     = "https://music.youtube.com"
+	// videos filter: EgWKAQ + IQ + AWoMEA4QChADEAQQCRAF
+	videosFilterParams = "EgWKAQIQAWoMEA4QChADEAQQCRAF"
+	defaultUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+	defaultOrigin      = "https://music.youtube.com"
 )
+
+// SearchFilter selects which YouTube Music search shelf to request.
+type SearchFilter string
+
+const (
+	// SearchFilterSongs requests song/audio-track results (default).
+	SearchFilterSongs SearchFilter = "songs"
+	// SearchFilterVideos requests music video results (including official MVs).
+	SearchFilterVideos SearchFilter = "videos"
+)
+
+func (f SearchFilter) params() string {
+	switch f {
+	case SearchFilterVideos:
+		return videosFilterParams
+	case SearchFilterSongs, "":
+		return songsFilterParams
+	default:
+		return songsFilterParams
+	}
+}
 
 // Options configures a Client.
 type Options struct {
@@ -127,6 +150,12 @@ func New(opts Options) (*Client, error) {
 // Search posts a songs-filter query and returns the raw track list (typically ~20).
 // Callers are responsible for limit / scoring / session (later layers).
 func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
+	return c.SearchFilter(ctx, query, SearchFilterSongs)
+}
+
+// SearchFilter posts a filtered search query and returns the raw track list.
+// Unknown/empty filters fall back to songs. Callers handle limit / scoring / session.
+func (c *Client) SearchFilter(ctx context.Context, query string, filter SearchFilter) ([]Track, error) {
 	if c == nil {
 		return nil, fmt.Errorf("ytmusic: nil client")
 	}
@@ -148,7 +177,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 			},
 		},
 		"query":  query,
-		"params": songsFilterParams,
+		"params": filter.params(),
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

@@ -37,6 +37,9 @@ func TestParseSearchResponseLemonFixture(t *testing.T) {
 	if first.Thumbnail == "" {
 		t.Fatalf("first track missing thumbnail: %+v", first)
 	}
+	if first.MusicVideoType != "MUSIC_VIDEO_TYPE_ATV" {
+		t.Fatalf("first track musicVideoType=%q want ATV", first.MusicVideoType)
+	}
 	// Lemon by Kenshi Yonezu should appear first for this fixture.
 	if !strings.EqualFold(first.Title, "Lemon") {
 		t.Fatalf("unexpected first title %q", first.Title)
@@ -63,6 +66,66 @@ func TestParseSearchResponseLemonFixture(t *testing.T) {
 		if tr.Artists == nil {
 			t.Fatalf("track %d artists is nil", i)
 		}
+	}
+}
+
+func TestParseSearchResponseVideosMixedFixture(t *testing.T) {
+	body := readAnyFixture(t, "search_videos_mixed.json")
+	tracks, err := ParseSearchResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(tracks) != 4 {
+		t.Fatalf("tracks=%d want 4", len(tracks))
+	}
+
+	byID := map[string]Track{}
+	for _, tr := range tracks {
+		byID[tr.VideoID] = tr
+	}
+
+	omv := byID["omvLemon1"]
+	if omv.Title != "Lemon" {
+		t.Fatalf("omv title=%q", omv.Title)
+	}
+	if omv.MusicVideoType != "MUSIC_VIDEO_TYPE_OMV" {
+		t.Fatalf("omv type=%q", omv.MusicVideoType)
+	}
+	if len(omv.Artists) == 0 || !strings.Contains(strings.ToLower(omv.Artists[0]), "kenshi") {
+		t.Fatalf("omv artists=%v", omv.Artists)
+	}
+	if omv.DurationSeconds != 4*60+16 {
+		t.Fatalf("omv duration=%d", omv.DurationSeconds)
+	}
+
+	ugc := byID["ugcCover1"]
+	if ugc.MusicVideoType != "MUSIC_VIDEO_TYPE_UGC" {
+		t.Fatalf("ugc type=%q", ugc.MusicVideoType)
+	}
+
+	atv := byID["atvSong1"]
+	if atv.MusicVideoType != "MUSIC_VIDEO_TYPE_ATV" {
+		t.Fatalf("atv type=%q", atv.MusicVideoType)
+	}
+
+	menuOnly := byID["menuOnlyOMV"]
+	if menuOnly.MusicVideoType != "MUSIC_VIDEO_TYPE_OMV" {
+		t.Fatalf("menu-only type=%q want OMV from menu watchEndpoint", menuOnly.MusicVideoType)
+	}
+}
+
+func TestSearchFilterParams(t *testing.T) {
+	if SearchFilterSongs.params() != songsFilterParams {
+		t.Fatalf("songs params=%q", SearchFilterSongs.params())
+	}
+	if SearchFilterVideos.params() != videosFilterParams {
+		t.Fatalf("videos params=%q", SearchFilterVideos.params())
+	}
+	if SearchFilter("").params() != songsFilterParams {
+		t.Fatalf("empty filter should default to songs")
+	}
+	if SearchFilter("nope").params() != songsFilterParams {
+		t.Fatalf("unknown filter should default to songs")
 	}
 }
 
@@ -188,6 +251,44 @@ func TestSearchUsesHTTPClientAndParses(t *testing.T) {
 	}
 }
 
+func TestSearchFilterVideosUsesVideosParams(t *testing.T) {
+	body := readAnyFixture(t, "search_videos_mixed.json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if payload["query"] != "lemon official" {
+			t.Errorf("query=%v", payload["query"])
+		}
+		if payload["params"] != videosFilterParams {
+			t.Errorf("params=%v want %s", payload["params"], videosFilterParams)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := New(Options{
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+		APIKey:     "test-key",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tracks, err := client.SearchFilter(context.Background(), "lemon official", SearchFilterVideos)
+	if err != nil {
+		t.Fatalf("SearchFilter: %v", err)
+	}
+	if len(tracks) != 4 {
+		t.Fatalf("tracks=%d", len(tracks))
+	}
+	if tracks[0].MusicVideoType != "MUSIC_VIDEO_TYPE_OMV" {
+		t.Fatalf("first type=%q", tracks[0].MusicVideoType)
+	}
+}
+
 func TestSearchEmptyQuery(t *testing.T) {
 	client, err := New(Options{HTTPClient: &http.Client{Timeout: time.Second}})
 	if err != nil {
@@ -309,6 +410,19 @@ func readFixture(t *testing.T, name string) []byte {
 	}
 	if len(body) < 1000 {
 		t.Fatalf("fixture %s too small: %d bytes", path, len(body))
+	}
+	return body
+}
+
+func readAnyFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	if len(body) == 0 {
+		t.Fatalf("fixture %s empty", path)
 	}
 	return body
 }

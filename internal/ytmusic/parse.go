@@ -65,10 +65,76 @@ func parseListItem(renderer map[string]any) (Track, bool) {
 	t.Duration = duration
 	t.DurationSeconds = parseDurationSeconds(duration)
 	t.Thumbnail = pickBestThumbnail(renderer)
+	t.MusicVideoType = extractMusicVideoType(renderer)
 	if t.Artists == nil {
 		t.Artists = []string{}
 	}
 	return t, true
+}
+
+func extractMusicVideoType(renderer map[string]any) string {
+	candidates := []any{
+		dig(renderer, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint", "watchEndpoint"),
+		dig(renderer, "flexColumns", 0, "musicResponsiveListItemFlexColumnRenderer", "text", "runs", 0, "navigationEndpoint", "watchEndpoint"),
+		dig(renderer, "onTap", "watchEndpoint"),
+		dig(renderer, "navigationEndpoint", "watchEndpoint"),
+	}
+	// Also scan menu play actions; official videos often only expose type there.
+	if menuItems := asSlice(dig(renderer, "menu", "menuRenderer", "items")); len(menuItems) > 0 {
+		for _, raw := range menuItems {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"menuNavigationItemRenderer", "menuServiceItemRenderer"} {
+				node, ok := item[key].(map[string]any)
+				if !ok {
+					continue
+				}
+				if we := dig(node, "navigationEndpoint", "watchEndpoint"); we != nil {
+					candidates = append(candidates, we)
+				}
+				if we := dig(node, "serviceEndpoint", "watchEndpoint"); we != nil {
+					candidates = append(candidates, we)
+				}
+			}
+		}
+	}
+
+	for _, cand := range candidates {
+		if cand == nil {
+			continue
+		}
+		if typ := musicVideoTypeFromWatchEndpoint(cand); typ != "" {
+			return typ
+		}
+	}
+
+	// Last resort: walk the renderer for any watchEndpointMusicConfig.
+	var found string
+	walkJSON(renderer, func(obj map[string]any) {
+		if found != "" {
+			return
+		}
+		if cfg, ok := obj["watchEndpointMusicConfig"].(map[string]any); ok {
+			if typ := strings.TrimSpace(asString(cfg["musicVideoType"])); typ != "" {
+				found = typ
+			}
+		}
+	})
+	return found
+}
+
+func musicVideoTypeFromWatchEndpoint(v any) string {
+	we, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(asString(dig(we,
+		"watchEndpointMusicSupportedConfigs",
+		"watchEndpointMusicConfig",
+		"musicVideoType",
+	)))
 }
 
 func collectMetaRuns(renderer map[string]any) []any {
