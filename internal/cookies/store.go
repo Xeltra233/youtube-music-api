@@ -26,9 +26,8 @@ type ResolveOptions struct {
 // Resolve 返回最终应使用的 Netscape cookie 文件绝对路径。
 // 行为：
 //  1. 确保目录存在（便于云上先挂空目录再拷文件）
-//  2. 若已有 youtube.txt 则用之
-//  3. 否则扫描目录内 .txt，挑最像 YouTube 登录态的一份，复制为 youtube.txt
-//  4. 显式 File 若是有效文件则优先（仍建议落在 Dir 下）
+//  2. 扫描目录内 cookie 文件，按修改时间只保留最新一份到 youtube.txt，并删除更早的 drop-in
+//  3. 显式 File 若是有效文件则先纳入目录，再走同一套时间去重
 func Resolve(opts ResolveOptions) (string, error) {
 	dir := strings.TrimSpace(opts.Dir)
 	file := strings.TrimSpace(opts.File)
@@ -43,17 +42,33 @@ func Resolve(opts ResolveOptions) (string, error) {
 			dir = abs
 			file = ""
 		} else if err == nil && !st.IsDir() {
-			// 显式文件存在：若配置了 Dir，尽量同步到稳定名，方便以后只挂目录。
+			// 显式文件存在：纳入 Dir 后统一按时间去重。
 			if dir != "" {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return "", fmt.Errorf("cookies: mkdir %s: %w", dir, err)
 				}
 				stable := filepath.Join(dir, StableFileName)
-				if filepath.Clean(abs) != filepath.Clean(stable) {
-					if err := copyFile(abs, stable); err == nil {
+				if filepath.Clean(abs) != filepath.Clean(stable) && !isUnderDir(dir, abs) {
+					// 目录外文件先复制进目录，再参与时间裁决。
+					inDir := filepath.Join(dir, filepath.Base(abs))
+					if err := copyFile(abs, inDir); err != nil {
+						if cerr := copyFile(abs, stable); cerr != nil {
+							return abs, nil
+						}
 						return stable, nil
 					}
+					abs = inDir
 				}
+				if err := Deduplicate(dir, stable); err != nil {
+					return "", err
+				}
+				if FileExistsNonEmpty(stable) {
+					return stable, nil
+				}
+				if FileExistsNonEmpty(abs) {
+					return abs, nil
+				}
+				return stable, nil
 			}
 			return abs, nil
 		} else if err != nil && !os.IsNotExist(err) {
@@ -65,9 +80,8 @@ func Resolve(opts ResolveOptions) (string, error) {
 			if err := os.MkdirAll(parent, 0o755); err != nil {
 				return "", fmt.Errorf("cookies: mkdir %s: %w", parent, err)
 			}
-			// 若 parent 里已有其它 txt，提升为该路径。
-			if promoted, err := promoteBestInDir(parent, abs); err == nil && promoted != "" {
-				return promoted, nil
+			if err := Deduplicate(parent, abs); err != nil {
+				return "", err
 			}
 			return abs, nil
 		}
@@ -86,39 +100,36 @@ func Resolve(opts ResolveOptions) (string, error) {
 	}
 
 	stable := filepath.Join(absDir, StableFileName)
-	if st, err := os.Stat(stable); err == nil && !st.IsDir() && st.Size() > 0 {
-		if ok, _ := IsLikelyNetscape(stable); ok {
-			return stable, nil
-		}
-	}
-
-	if promoted, err := promoteBestInDir(absDir, stable); err != nil {
+	if err := Deduplicate(absDir, stable); err != nil {
 		return "", err
-	} else if promoted != "" {
-		return promoted, nil
 	}
-
-	// 目录还空：返回稳定路径，用户稍后拷文件进来即可（下载前可再 Resolve）。
+	// 即使目录还空，也返回稳定路径，用户稍后拷文件进来即可。
 	return stable, nil
 }
 
-func promoteBestInDir(dir, stablePath string) (string, error) {
+// cookieCandidate 是目录内一份可用的 cookie 文件。
+type cookieCandidate struct {
+	path  string
+	score int
+	mod   time.Time
+	size  int64
+}
+
+func listCookieCandidates(dir string) ([]cookieCandidate, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("cookies: readdir %s: %w", dir, err)
+		return nil, fmt.Errorf("cookies: readdir %s: %w", dir, err)
 	}
-	type cand struct {
-		path  string
-		score int
-		mod   time.Time
-	}
-	var list []cand
+	var list []cookieCandidate
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		low := strings.ToLower(name)
+		if strings.HasSuffix(low, ".tmp") || strings.HasSuffix(low, ".uploading") {
+			continue
+		}
 		if !(strings.HasSuffix(low, ".txt") || strings.HasSuffix(low, ".cookies") || low == "cookies") {
 			continue
 		}
@@ -129,29 +140,101 @@ func promoteBestInDir(dir, stablePath string) (string, error) {
 		}
 		info, _ := e.Info()
 		mod := time.Time{}
+		var size int64
 		if info != nil {
 			mod = info.ModTime()
+			size = info.Size()
 		}
-		list = append(list, cand{path: p, score: score, mod: mod})
+		list = append(list, cookieCandidate{path: p, score: score, mod: mod, size: size})
 	}
-	if len(list) == 0 {
-		return "", nil
-	}
-	sort.Slice(list, func(i, j int) bool {
+	return list, nil
+}
+
+// sortCandidatesByTime 按修改时间降序（更晚优先）；同秒时用 score、路径稳定决胜。
+func sortCandidatesByTime(list []cookieCandidate) {
+	sort.SliceStable(list, func(i, j int) bool {
+		if !list[i].mod.Equal(list[j].mod) {
+			return list[i].mod.After(list[j].mod)
+		}
 		if list[i].score != list[j].score {
 			return list[i].score > list[j].score
 		}
-		return list[i].mod.After(list[j].mod)
+		return list[i].path < list[j].path
 	})
-	best := list[0].path
-	if filepath.Clean(best) == filepath.Clean(stablePath) {
+}
+
+// Deduplicate 按修改时间只保留最新 cookie：
+//  1. 把最新有效文件内容提升到 stablePath（通常 youtube.txt）
+//  2. 删除目录内其它更早的 drop-in cookie 文件
+// 上传与重启（Resolve）共用此逻辑。
+func Deduplicate(dir, stablePath string) error {
+	dir = strings.TrimSpace(dir)
+	stablePath = strings.TrimSpace(stablePath)
+	if dir == "" || stablePath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("cookies: mkdir %s: %w", dir, err)
+	}
+	list, err := listCookieCandidates(dir)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	sortCandidatesByTime(list)
+	best := list[0]
+	stableClean := filepath.Clean(stablePath)
+
+	// 最新内容落到稳定名。
+	if filepath.Clean(best.path) != stableClean {
+		if err := copyFile(best.path, stablePath); err != nil {
+			return fmt.Errorf("cookies: promote latest to stable: %w", err)
+		}
+	}
+
+	// 只保留 stable：删除其它 drop-in。
+	for _, c := range list {
+		if filepath.Clean(c.path) == stableClean {
+			continue
+		}
+		if !isUnderDir(dir, c.path) {
+			continue
+		}
+		_ = os.Remove(c.path)
+	}
+	return nil
+}
+
+// promoteBestInDir 兼容旧调用：按时间去重后返回 stable 路径（若有内容）或空。
+func promoteBestInDir(dir, stablePath string) (string, error) {
+	if err := Deduplicate(dir, stablePath); err != nil {
+		return "", err
+	}
+	if FileExistsNonEmpty(stablePath) {
 		return stablePath, nil
 	}
-	if err := copyFile(best, stablePath); err != nil {
-		// 复制失败则直接用原文件
-		return best, nil
+	return "", nil
+}
+
+func isUnderDir(dir, path string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
 	}
-	return stablePath, nil
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return true
 }
 
 func copyFile(src, dst string) error {
@@ -299,85 +382,13 @@ func FileExistsNonEmpty(path string) bool {
 	return err == nil && !st.IsDir() && st.Size() > 0
 }
 
-// RefreshDropIns 扫描 dir，把更好的 drop-in 提升到 stablePath（通常是 youtube.txt）。
-// 若 stable 已有内容且仍有效，仅在 drop-in 明显更新时覆盖。
+// RefreshDropIns 扫描 dir，按修改时间只保留最新 cookie 到 stablePath。
+// 上传与启动共用 Deduplicate。
 func RefreshDropIns(dir, stablePath string) error {
 	dir = strings.TrimSpace(dir)
 	stablePath = strings.TrimSpace(stablePath)
 	if dir == "" || stablePath == "" {
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return promoteBestInDirSmart(dir, stablePath)
-}
-
-func promoteBestInDirSmart(dir, stablePath string) error {
-	stableOK, stableScore := false, 0
-	if st, err := os.Stat(stablePath); err == nil && !st.IsDir() && st.Size() > 0 {
-		stableOK, stableScore = scoreCookieFile(stablePath)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	type cand struct {
-		path  string
-		score int
-		mod   time.Time
-		size  int64
-	}
-	var list []cand
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		low := strings.ToLower(name)
-		if !(strings.HasSuffix(low, ".txt") || strings.HasSuffix(low, ".cookies") || low == "cookies") {
-			continue
-		}
-		p := filepath.Join(dir, name)
-		if filepath.Clean(p) == filepath.Clean(stablePath) {
-			continue
-		}
-		ok, score := scoreCookieFile(p)
-		if !ok {
-			continue
-		}
-		info, _ := e.Info()
-		mod := time.Time{}
-		var size int64
-		if info != nil {
-			mod = info.ModTime()
-			size = info.Size()
-		}
-		list = append(list, cand{path: p, score: score, mod: mod, size: size})
-	}
-	if len(list) == 0 {
-		if !stableOK {
-			// 尝试走原逻辑（例如只有 stable 自己）
-			_, _ = promoteBestInDir(dir, stablePath)
-		}
-		return nil
-	}
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].score != list[j].score {
-			return list[i].score > list[j].score
-		}
-		return list[i].mod.After(list[j].mod)
-	})
-	best := list[0]
-	if stableOK && best.score < stableScore {
-		return nil
-	}
-	if stableOK && best.score == stableScore {
-		// 同质量时，仅当 drop-in 更新且更大/更新才覆盖
-		st, err := os.Stat(stablePath)
-		if err == nil && !best.mod.After(st.ModTime()) {
-			return nil
-		}
-	}
-	return copyFile(best.path, stablePath)
+	return Deduplicate(dir, stablePath)
 }
