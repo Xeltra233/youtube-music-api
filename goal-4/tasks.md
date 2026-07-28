@@ -23,11 +23,21 @@
   - 残余风险：真实 OMV 标题噪声可能导致个别漏匹配；T5 live 抽样再确认
   - 下一步：T3 HTTP `ResultItem` 透出 JSON 字段
 
-- [ ] T3 HTTP 契约透出：`ResultItem` JSON 新字段 + 回归
-  - `httpapi.ResultItem` / `itemToAPI` 映射新字段
-  - server 测试断言 JSON 出现 `official_video_id` 等
-  - 确认旧字段与 download 链路不受影响
-  - 验证：`go test ./internal/httpapi ./internal/session ./internal/search`
+- [x] T3 HTTP 契约透出：`ResultItem` JSON 新字段 + 回归
+  - 完成：
+    - `ResultItem` 增加 `official_video_id` / `official_video_url` / `has_official_video`
+    - `itemToAPI` 全量映射
+    - `TestSearchOK` 断言有值/空值；`TestSearchOfficialVideoJSONFieldsPresent` 校验原始 JSON key
+  - 验证：`go test ./internal/httpapi ./internal/session ./internal/search` 通过
+  - 残余风险：文档尚未同步（T4）
+  - 下一步：T4 bot 参数文档
+
+## 检查点（T1–T3）
+
+- 需求未偏：官方视频作为 `/search` results 新增字段，旧 `video_id` 不变
+- `go test ./internal/ytmusic ./internal/search ./internal/httpapi ./internal/session` 通过
+- 无 download 行为改动
+- 文档尚未更新（T4）
 
 - [ ] T4 bot 参数文档
   - 更新 `docs/BOT-INTEGRATION.md`：字段表、示例 JSON、与 `video_id` 区别、推荐 bot 用法

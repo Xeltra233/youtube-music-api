@@ -106,6 +106,9 @@ func sampleItems() []search.Item {
 			Artists: []string{"Kenshi Yonezu"}, Album: "STRAY SHEEP",
 			Duration: "4:17", DurationSeconds: 257, VideoID: "3NNhrqHZqlI",
 			Thumbnail: "https://example.com/a.jpg", MatchScore: 1.0,
+			OfficialVideoID:  "SX_r8WxC3jY",
+			OfficialVideoURL: "https://www.youtube.com/watch?v=SX_r8WxC3jY",
+			HasOfficialVideo: true,
 		},
 		{
 			Index: 2, DisplayName: "晴天 - 周杰伦", Title: "晴天",
@@ -260,6 +263,15 @@ func TestSearchOK(t *testing.T) {
 	if body.Results[0].Index != 1 || body.Results[0].VideoID != "3NNhrqHZqlI" {
 		t.Fatalf("first: %+v", body.Results[0])
 	}
+	if !body.Results[0].HasOfficialVideo || body.Results[0].OfficialVideoID != "SX_r8WxC3jY" {
+		t.Fatalf("first official fields: %+v", body.Results[0])
+	}
+	if body.Results[0].OfficialVideoURL != "https://www.youtube.com/watch?v=SX_r8WxC3jY" {
+		t.Fatalf("first official url: %q", body.Results[0].OfficialVideoURL)
+	}
+	if body.Results[1].HasOfficialVideo || body.Results[1].OfficialVideoID != "" || body.Results[1].OfficialVideoURL != "" {
+		t.Fatalf("second should have empty official fields: %+v", body.Results[1])
+	}
 	if body.ExpiresIn <= 0 {
 		t.Fatalf("expires_in: %d", body.ExpiresIn)
 	}
@@ -268,6 +280,55 @@ func TestSearchOK(t *testing.T) {
 	}
 	if body.Results[1].Title != "晴天" {
 		t.Fatalf("cjk title lost: %+v", body.Results[1])
+	}
+}
+
+func TestSearchOfficialVideoJSONFieldsPresent(t *testing.T) {
+	cfg := testCfg(t)
+	items := sampleItems()
+	st := &stubSearcher{resp: &search.Response{
+		Query: "lemon", LimitRequested: 10, LimitUsed: 10,
+		Total: 2, Results: items[:2],
+	}}
+	srv := newTestServer(t, cfg, st, nil)
+	rr := doJSON(t, srv.Handler(), "POST", "/search", map[string]any{"query": "lemon"}, nil)
+	if rr.Code != 200 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	results, ok := raw["results"].([]any)
+	if !ok || len(results) < 2 {
+		t.Fatalf("results=%v", raw["results"])
+	}
+	first, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first type=%T", results[0])
+	}
+	for _, key := range []string{"official_video_id", "official_video_url", "has_official_video", "video_id"} {
+		if _, exists := first[key]; !exists {
+			t.Fatalf("missing json key %q in first result: %#v", key, first)
+		}
+	}
+	if first["video_id"] != "3NNhrqHZqlI" {
+		t.Fatalf("video_id changed: %v", first["video_id"])
+	}
+	if first["official_video_id"] != "SX_r8WxC3jY" {
+		t.Fatalf("official_video_id=%v", first["official_video_id"])
+	}
+	if first["has_official_video"] != true {
+		t.Fatalf("has_official_video=%v", first["has_official_video"])
+	}
+
+	second, ok := results[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second type=%T", results[1])
+	}
+	if second["official_video_id"] != "" || second["official_video_url"] != "" || second["has_official_video"] != false {
+		t.Fatalf("second official raw=%#v", second)
 	}
 }
 

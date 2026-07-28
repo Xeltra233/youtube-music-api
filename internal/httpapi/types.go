@@ -36,6 +36,12 @@ type ResultItem struct {
 	VideoID         string   `json:"video_id"`
 	Thumbnail       string   `json:"thumbnail"`
 	MatchScore      float64  `json:"match_score"`
+	// OfficialVideoID is the matched official music video id; empty when unknown.
+	OfficialVideoID string `json:"official_video_id"`
+	// OfficialVideoURL is a ready-to-send watch URL; empty when unknown.
+	OfficialVideoURL string `json:"official_video_url"`
+	// HasOfficialVideo is true when OfficialVideoID is non-empty.
+	HasOfficialVideo bool `json:"has_official_video"`
 }
 
 // DownloadRequestBody is the POST /download JSON body.
@@ -67,16 +73,19 @@ func itemToAPI(it search.Item) ResultItem {
 		artists = []string{}
 	}
 	return ResultItem{
-		Index:           it.Index,
-		DisplayName:     it.DisplayName,
-		Title:           it.Title,
-		Artists:         artists,
-		Album:           it.Album,
-		Duration:        it.Duration,
-		DurationSeconds: it.DurationSeconds,
-		VideoID:         it.VideoID,
-		Thumbnail:       it.Thumbnail,
-		MatchScore:      it.MatchScore,
+		Index:            it.Index,
+		DisplayName:      it.DisplayName,
+		Title:            it.Title,
+		Artists:          artists,
+		Album:            it.Album,
+		Duration:         it.Duration,
+		DurationSeconds:  it.DurationSeconds,
+		VideoID:          it.VideoID,
+		Thumbnail:        it.Thumbnail,
+		MatchScore:       it.MatchScore,
+		OfficialVideoID:  it.OfficialVideoID,
+		OfficialVideoURL: it.OfficialVideoURL,
+		HasOfficialVideo: it.HasOfficialVideo,
 	}
 }
 
