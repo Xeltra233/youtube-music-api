@@ -47,11 +47,26 @@
   - 验证：三字段名与 `httpapi.ResultItem` json tag 一致（`rg official_video`）
   - 下一步：T5 全量测试 + live 抽样
 
-- [ ] T5 全量验证 + 抽样 live（可降级）+ 收尾
-  - `go test ./...`
-  - 若网络可用：抽样 1~2 个 query，确认有歌能出非空 `official_video_id`
-  - 网络不可用则记录降级原因，不阻塞以单测+契约为准
-  - 清理临时脚本；需要时提交（无敏感数据）
+- [x] T5 全量验证 + 抽样 live（可降级）+ 收尾
+  - 完成：
+    - `go test ./...` 全绿
+    - live 抽样：
+      - `lemon kenshi yonezu` → Lemon 命中 `official_video_id=SX_ViT4Ra7k`
+      - `shape of you ed sheeran` → 命中 `JGwWNGJdvx8`
+    - 修复误匹配：同艺人不同歌（LADY vs Lemon）不再只靠艺人 token 绑 OMV
+      - 新增标题阈值 `officialVideoMinTitleScore=0.50`
+      - 单测 `TestAttachOfficialVideosRejectsSameArtistDifferentTitle`
+    - 清理临时 live probe 脚本
+  - 验证：全量测试 + live + 文档字段一致
+
+## 检查点（T4–T5 / 最终）
+
+- 旧 `video_id` 语义未变；`/download` 仍用音轨 ID
+- 新字段稳定返回（有值或空值）
+- bot 文档已写清接入方式
+- `go test ./...` 通过
+- live 抽样确认真实可出非空 official 字段
+- 无敏感数据提交
 
 ## 检查点
 
@@ -59,8 +74,8 @@
 
 ## 最终 review 清单
 
-- [ ] 旧 `video_id` 语义未变
-- [ ] 新字段稳定返回（有值或空值）
-- [ ] 文档足够 bot 直接接入
-- [ ] 测试通过
-- [ ] 无敏感数据提交
+- [x] 旧 `video_id` 语义未变
+- [x] 新字段稳定返回（有值或空值）
+- [x] 文档足够 bot 直接接入
+- [x] 测试通过
+- [x] 无敏感数据提交

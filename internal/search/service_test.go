@@ -594,3 +594,20 @@ func TestAttachOfficialVideosUnit(t *testing.T) {
 		t.Fatalf("item1 should stay empty: %+v", items[1])
 	}
 }
+
+func TestAttachOfficialVideosRejectsSameArtistDifferentTitle(t *testing.T) {
+	items := []Item{
+		{VideoID: "ladySong", Title: "LADY", Artists: []string{"Kenshi Yonezu"}, DisplayName: "LADY - Kenshi Yonezu"},
+		{VideoID: "lemonSong", Title: "Lemon", Artists: []string{"Kenshi Yonezu"}, DisplayName: "Lemon - Kenshi Yonezu"},
+	}
+	videos := []ytmusic.Track{
+		videoTrack("omvLemon", "Lemon", []string{"Kenshi Yonezu"}, "MUSIC_VIDEO_TYPE_OMV"),
+	}
+	attachOfficialVideos(items, videos)
+	if items[0].HasOfficialVideo {
+		t.Fatalf("LADY must not bind Lemon OMV via artist overlap: %+v", items[0])
+	}
+	if !items[1].HasOfficialVideo || items[1].OfficialVideoID != "omvLemon" {
+		t.Fatalf("Lemon should still bind: %+v", items[1])
+	}
+}

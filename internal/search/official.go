@@ -10,8 +10,11 @@ import (
 const (
 	// officialVideoMinScore 是采纳官方视频候选的最低相似度。
 	// 低于此值视为没有官方视频，避免把翻唱/无关 MV 错绑到歌曲上。
-	officialVideoMinScore  = 0.55
-	officialVideoURLPrefix = "https://www.youtube.com/watch?v="
+	officialVideoMinScore = 0.55
+	// officialVideoMinTitleScore 要求标题本身也足够接近。
+	// 否则同艺人不同歌（如 LADY vs Lemon）会因艺人 token 把 display_name 分抬高而误绑。
+	officialVideoMinTitleScore = 0.50
+	officialVideoURLPrefix     = "https://www.youtube.com/watch?v="
 )
 
 // attachOfficialVideos 为每条 song 结果填充官方 MV 字段（原地修改 items）。
@@ -88,11 +91,19 @@ func bestOfficialVideoID(song Item, candidates []ytmusic.Track) string {
 			continue
 		}
 		vDisplay := matching.BuildDisplayName(v.Title, v.Artists)
-		score := matching.MatchScore(songDisplay, vDisplay)
-		if songTitle != "" && strings.TrimSpace(v.Title) != "" {
-			if titleScore := matching.MatchScore(songTitle, v.Title); titleScore > score {
-				score = titleScore
+		vTitle := strings.TrimSpace(v.Title)
+		displayScore := matching.MatchScore(songDisplay, vDisplay)
+		titleScore := 0.0
+		if songTitle != "" && vTitle != "" {
+			titleScore = matching.MatchScore(songTitle, vTitle)
+			// 标题太不像时直接跳过：禁止“只靠同歌手”误绑。
+			if titleScore < officialVideoMinTitleScore {
+				continue
 			}
+		}
+		score := displayScore
+		if titleScore > score {
+			score = titleScore
 		}
 		// 严格大于：同分保留先出现的候选，结果与上游顺序稳定。
 		if score > bestScore {
