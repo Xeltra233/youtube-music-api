@@ -77,11 +77,23 @@
     - `go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 通过；临时文件及浏览器数据库特征扫描无残留。
   - 剩余风险/下一步：本轮尚未把最近同步结果和登录质量暴露给管理 API；真实 profile 的系统解密条件仍在 T7/T12 实证。下一轮执行 T5，增加只含元数据的管理状态并验证鉴权与脱敏。
 
-- [ ] T5 增加 Cookie 质量与管理状态元数据
+- [x] T5 增加 Cookie 质量与管理状态元数据
   - 目标：状态返回 source、logged_in、最近同步时间/结果/错误摘要，不返回正文或敏感参数。
   - 验证：httpapi 单测检查字段、鉴权与敏感值不出现在响应。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - `CookieLifecycle` 新增读写锁保护的同步状态：是否配置浏览器来源、进行中、phase、最近结果、是否更新、完成时间和最近成功时间；启动/周期同步开始、成功、保留、失败及取消都会原子更新。
+    - 浏览器错误在状态层归一为固定枚举，例如 `profile_database_locked`、`profile_decrypt_failed`、`not_logged_in`、`timeout` 和 `sync_failed`；任意 provider 原始文本会在 HTTP 边界再次收敛，不转发命令输出、profile 路径或 Cookie 值。
+    - 稳定 jar 状态在包级读锁下同时读取文件元数据与质量，管理 API 新增 `source`、`browser_configured`、`valid`、`logged_in`、质量分、Cookie 计数、同步进行中、最近结果/错误/时间等字段。
+    - `source=browser` 表示配置的主来源是浏览器档案；浏览器失败时 `present/logged_in` 仍反映当前稳定文件回退。未配置浏览器时，有稳定 jar 为 `file`，无文件为 `none`。
+    - `httpapi.Options` 接受只读 `CookieSyncStatusProvider`，`main` 注入进程级生命周期；管理鉴权在读取 provider 和文件状态之前完成。
+    - 状态响应移除绝对 `cookies_dir`，保留安全的文件名/大小/时间元数据；GET 状态仍会在包级锁下提升新 drop-in，维持运行期文件热更新。上传名为 `youtube.txt` 时先改成唯一 drop-in，再由 cookies 包替换稳定 jar，避免绕过写锁。
+    - HTTP 状态路径不再修改共享 `cfg.CookiesFile`，消除管理请求与下载/后台生命周期之间的配置数据竞争。
+  - 验证结果：
+    - `go test ./internal/cookies ./internal/httpapi -count=20` 通过；状态/脱敏定向测试各连续运行 50 次通过。
+    - `go test -race ./internal/cookies ./internal/httpapi ./cmd/ytmusic-bridge` 通过；`go test ./...` 与 `go test -race ./...` 通过。
+    - 测试覆盖空状态、文件上传登录态、浏览器来源、成功/失败/进行中/取消、固定错误分类、恶意 provider 文本、未鉴权不调用 provider，以及 browser spec、代理、Cookie 值、原始错误和本机目录均不进入响应。
+    - `go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 通过；仓库未发现浏览器数据库、真实 Cookie 或临时导出残留。
+  - 剩余风险/下一步：状态目前描述稳定 jar 与后台同步，不包含后续前端浏览器登录会话本身；该部分由 T8/T9 扩展。下一轮执行 T6，证明同一同步后 jar 被搜索和音频/MP4 下载共同消费，并验证上传回退。
 
 - [ ] T6 搜索与下载共用同步后稳定 jar 的集成回归
   - 目标：证明浏览器同步后的 jar 同时被 InnerTube 搜索和 yt-dlp 下载快照消费；上传文件仍可回退。

@@ -26,6 +26,8 @@ type LifecycleLogFunc func(format string, args ...any)
 // from racing a newly extracted browser jar with the same quality score.
 type CookieLifecycle struct {
 	operationMu sync.Mutex
+	statusMu    sync.RWMutex
+	status      cookieSyncState
 	browser     BrowserProfileSyncer
 	keepAlive   KeepAliveRunner
 	logf        LifecycleLogFunc
@@ -70,7 +72,11 @@ type CookieLifecycleOptions struct {
 // Failures are reported and absorbed so an existing stable jar or anonymous
 // operation remains available.
 func (l *CookieLifecycle) RunStartup(ctx context.Context, opt CookieLifecycleOptions) {
-	if l == nil || !opt.BrowserSyncOnStart || strings.TrimSpace(opt.BrowserSpec) == "" {
+	if l == nil {
+		return
+	}
+	l.configureStatus(opt)
+	if !opt.BrowserSyncOnStart || strings.TrimSpace(opt.BrowserSpec) == "" {
 		return
 	}
 	l.runBrowserSync(ctx, opt, "startup")
@@ -86,6 +92,7 @@ func (l *CookieLifecycle) Run(ctx context.Context, opt CookieLifecycleOptions) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	l.configureStatus(opt)
 
 	var browserTicker *time.Ticker
 	var browserTicks <-chan time.Time
@@ -171,6 +178,7 @@ func (l *CookieLifecycle) runBrowserSync(ctx context.Context, opt CookieLifecycl
 	if l.browser == nil {
 		l.browser = NewBrowserSyncer(nil)
 	}
+	l.beginBrowserSync(phase)
 	result, err := l.browser.Sync(ctx, BrowserSyncOptions{
 		BrowserSpec: opt.BrowserSpec,
 		StableFile:  opt.StableFile,
@@ -178,6 +186,7 @@ func (l *CookieLifecycle) runBrowserSync(ctx context.Context, opt CookieLifecycl
 		Proxy:       opt.Proxy,
 		Timeout:     opt.BrowserSyncTimeout,
 	})
+	l.finishBrowserSync(phase, result, err, ctx.Err())
 	if err != nil {
 		if ctx.Err() == nil {
 			l.log("cookies browser sync: %s failed: %v", phase, err)

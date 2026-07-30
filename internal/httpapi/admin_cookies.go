@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -13,6 +15,8 @@ import (
 )
 
 const maxCookieUploadBytes = 2 << 20 // 2 MiB
+
+var cookieUploadSequence atomic.Uint64
 
 func (s *Server) handleAdminCookieStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -66,6 +70,13 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 	if !strings.HasSuffix(strings.ToLower(name), ".txt") && !strings.HasSuffix(strings.ToLower(name), ".cookies") {
 		name = name + ".txt"
 	}
+	stable := filepath.Join(s.cfg.CookiesDir, cookies.StableFileName)
+	if strings.EqualFold(name, cookies.StableFileName) {
+		// Keep uploads as drop-ins so only the cookies package replaces the
+		// stable jar under its process-wide writer lock.
+		name = "upload-" + strconv.FormatInt(s.now().UnixNano(), 10) + "-" +
+			strconv.FormatUint(cookieUploadSequence.Add(1), 10) + ".txt"
+	}
 
 	data, err := io.ReadAll(io.LimitReader(file, maxCookieUploadBytes+1))
 	if err != nil {
@@ -106,12 +117,9 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Promote into stable youtube.txt for runtime use.
-	stable := filepath.Join(s.cfg.CookiesDir, cookies.StableFileName)
-	_ = cookies.RefreshDropIns(s.cfg.CookiesDir, stable)
-	if resolved, err := cookies.Resolve(cookies.ResolveOptions{Dir: s.cfg.CookiesDir, File: s.cfg.CookiesFile}); err == nil && resolved != "" {
-		s.cfg.CookiesFile = resolved
-	} else {
-		s.cfg.CookiesFile = stable
+	if err := cookies.RefreshDropIns(s.cfg.CookiesDir, stable); err != nil {
+		writeAdminErr(w, http.StatusInternalServerError, "Cookie 文件提升失败")
+		return
 	}
 
 	payload := s.cookieStatusPayload()
@@ -122,41 +130,46 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) cookieStatusPayload() map[string]any {
-	dir := ""
-	file := ""
+	dir, file := s.activeCookiePath()
+	if dir != "" {
+		stable := filepath.Join(dir, cookies.StableFileName)
+		if err := cookies.RefreshDropIns(dir, stable); err == nil && cookies.FileExistsNonEmpty(stable) {
+			file = stable
+		}
+	}
 	keepalive := false
 	intervalSec := 0
 	if s.cfg != nil {
-		dir = s.cfg.CookiesDir
-		file = s.cfg.CookiesFile
 		keepalive = s.cfg.CookiesKeepAlive
 		if s.cfg.CookiesKeepAliveEvery > 0 {
 			intervalSec = int(s.cfg.CookiesKeepAliveEvery / time.Second)
 		}
 	}
-	// Prefer stable path for status.
-	stable := ""
-	if dir != "" {
-		stable = filepath.Join(dir, cookies.StableFileName)
-		_ = cookies.RefreshDropIns(dir, stable)
-		if resolved, err := cookies.Resolve(cookies.ResolveOptions{Dir: dir, File: file}); err == nil {
-			file = resolved
-			if s.cfg != nil {
-				s.cfg.CookiesFile = resolved
-			}
-		}
+	fileStatus, err := cookies.InspectCookieFileStatus(file)
+	if err != nil {
+		fileStatus = cookies.CookieFileStatus{}
 	}
-	present := cookies.FileExistsNonEmpty(file)
-	var size int64
-	var modUnix int64
-	var modRFC3339 string
-	if present {
-		if st, err := os.Stat(file); err == nil {
-			size = st.Size()
-			modUnix = st.ModTime().Unix()
-			modRFC3339 = st.ModTime().UTC().Format(time.RFC3339)
-		}
+
+	syncStatus := cookies.CookieSyncStatus{LastResult: cookies.CookieSyncResultNever}
+	if s.cfg != nil {
+		syncStatus.BrowserConfigured = s.cfg.HasBrowserCookieSource()
 	}
+	if s.cookieStatus != nil {
+		provided := s.cookieStatus.CookieSyncStatus()
+		provided.BrowserConfigured = provided.BrowserConfigured || syncStatus.BrowserConfigured
+		syncStatus = provided
+	}
+	syncStatus = cookies.SanitizeCookieSyncStatus(syncStatus)
+
+	source := cookies.CookieSourceNone
+	if syncStatus.BrowserConfigured {
+		source = cookies.CookieSourceBrowser
+	} else if fileStatus.Present {
+		source = cookies.CookieSourceFile
+	}
+	modUnix, modRFC3339 := statusTime(fileStatus.ModifiedAt)
+	lastSyncUnix, lastSyncRFC3339 := statusTime(syncStatus.LastSyncAt)
+	lastSuccessUnix, lastSuccessRFC3339 := statusTime(syncStatus.LastSuccessAt)
 	// Count drop-in txt files (metadata only).
 	dropins := 0
 	if dir != "" {
@@ -173,18 +186,66 @@ func (s *Server) cookieStatusPayload() map[string]any {
 		}
 	}
 	return map[string]any{
-		"ok":                 true,
-		"cookies_dir":        dir,
-		"active_file":        filepath.Base(file),
-		"present":            present,
-		"size_bytes":         size,
-		"modified_unix":      modUnix,
-		"modified_at":        modRFC3339,
-		"keepalive":          keepalive,
-		"keepalive_interval": intervalSec,
-		"dropin_files":       dropins,
+		"ok":                   true,
+		"active_file":          safeBaseName(file),
+		"present":              fileStatus.Present,
+		"size_bytes":           fileStatus.SizeBytes,
+		"modified_unix":        modUnix,
+		"modified_at":          modRFC3339,
+		"keepalive":            keepalive,
+		"keepalive_interval":   intervalSec,
+		"dropin_files":         dropins,
+		"source":               source,
+		"browser_configured":   syncStatus.BrowserConfigured,
+		"valid":                fileStatus.Quality.Valid,
+		"logged_in":            fileStatus.Quality.LoggedIn,
+		"quality_score":        fileStatus.Quality.Score,
+		"cookie_count":         fileStatus.Quality.CookieCount,
+		"youtube_google_count": fileStatus.Quality.YouTubeGoogleCookies,
+		"auth_cookie_count":    fileStatus.Quality.AuthCookies,
+		"sync_in_progress":     syncStatus.InProgress,
+		"last_sync_phase":      syncStatus.LastPhase,
+		"last_sync_result":     syncStatus.LastResult,
+		"last_sync_error":      syncStatus.LastError,
+		"last_sync_updated":    syncStatus.LastUpdated,
+		"last_sync_unix":       lastSyncUnix,
+		"last_sync_at":         lastSyncRFC3339,
+		"last_success_unix":    lastSuccessUnix,
+		"last_success_at":      lastSuccessRFC3339,
 		// Never return cookie contents.
 	}
+}
+
+func (s *Server) activeCookiePath() (dir, file string) {
+	if s == nil || s.cfg == nil {
+		return "", ""
+	}
+	dir = strings.TrimSpace(s.cfg.CookiesDir)
+	file = strings.TrimSpace(s.cfg.CookiesFile)
+	if dir == "" {
+		return dir, file
+	}
+	stable := filepath.Join(dir, cookies.StableFileName)
+	if file == "" || cookies.FileExistsNonEmpty(stable) {
+		file = stable
+	}
+	return dir, file
+}
+
+func statusTime(value time.Time) (int64, string) {
+	if value.IsZero() {
+		return 0, ""
+	}
+	value = value.UTC()
+	return value.Unix(), value.Format(time.RFC3339)
+}
+
+func safeBaseName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Base(path)
 }
 
 func sanitizeUploadName(name string) string {

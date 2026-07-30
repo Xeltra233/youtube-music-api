@@ -120,11 +120,12 @@ func run() error {
 	}
 
 	api, err := httpapi.New(httpapi.Options{
-		Config:       cfg,
-		Searcher:     searchSvc,
-		Sessions:     sess,
-		Downloader:   dl,
-		YtdlpVersion: ytdlpVer,
+		Config:           cfg,
+		Searcher:         searchSvc,
+		Sessions:         sess,
+		Downloader:       dl,
+		YtdlpVersion:     ytdlpVer,
+		CookieSyncStatus: cookieLifecycle,
 	})
 	if err != nil {
 		return err

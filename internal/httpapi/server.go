@@ -16,6 +16,7 @@ import (
 
 	"github.com/xeltra/ytmusic-bridge/internal/adminauth"
 	"github.com/xeltra/ytmusic-bridge/internal/config"
+	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 	"github.com/xeltra/ytmusic-bridge/internal/download"
 	"github.com/xeltra/ytmusic-bridge/internal/search"
 	"github.com/xeltra/ytmusic-bridge/internal/session"
@@ -39,6 +40,12 @@ type Downloader interface {
 	LookupToken(token string) (*download.Result, error)
 }
 
+// CookieSyncStatusProvider supplies browser synchronization metadata without
+// exposing the configured browser spec or cookie contents.
+type CookieSyncStatusProvider interface {
+	CookieSyncStatus() cookies.CookieSyncStatus
+}
+
 // Server is the HTTP API surface.
 type Server struct {
 	cfg          *config.Config
@@ -49,6 +56,7 @@ type Server struct {
 	ytdlpVersion string
 	now          func() time.Time
 	admin        *adminauth.Manager
+	cookieStatus CookieSyncStatusProvider
 }
 
 // Options configures a Server.
@@ -61,6 +69,8 @@ type Options struct {
 	Now          func() time.Time
 	// Admin optional; when nil, built from Config admin fields.
 	Admin *adminauth.Manager
+	// CookieSyncStatus optional; main passes the process CookieLifecycle.
+	CookieSyncStatus CookieSyncStatusProvider
 }
 
 // New builds an HTTP server. cfg/searcher/sessions/downloader are required.
@@ -99,6 +109,7 @@ func New(opts Options) (*Server, error) {
 		ytdlpVersion: strings.TrimSpace(opts.YtdlpVersion),
 		now:          now,
 		admin:        admin,
+		cookieStatus: opts.CookieSyncStatus,
 	}, nil
 }
 

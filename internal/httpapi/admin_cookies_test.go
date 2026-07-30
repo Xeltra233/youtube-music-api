@@ -58,8 +58,12 @@ func TestAdminCookieUploadAndStatus(t *testing.T) {
 	if st["present"] != false {
 		t.Fatalf("want present=false: %v", st)
 	}
+	if st["source"] != cookies.CookieSourceNone || st["logged_in"] != false ||
+		st["last_sync_result"] != cookies.CookieSyncResultNever || st["last_sync_error"] != "" {
+		t.Fatalf("unexpected empty cookie status: %v", st)
+	}
 	// ensure no content leak keys
-	for _, bad := range []string{"content", "cookie", "cookies_text", "raw"} {
+	for _, bad := range []string{"content", "cookie", "cookies_text", "raw", "cookies_dir"} {
 		if _, ok := st[bad]; ok {
 			t.Fatalf("status must not include %s", bad)
 		}
@@ -68,7 +72,7 @@ func TestAdminCookieUploadAndStatus(t *testing.T) {
 	// upload
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
-	part, err := w.CreateFormFile("file", "966fac1c-demo.txt")
+	part, err := w.CreateFormFile("file", cookies.StableFileName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +95,22 @@ func TestAdminCookieUploadAndStatus(t *testing.T) {
 	if up["present"] != true {
 		t.Fatalf("upload response present: %v", up)
 	}
+	if up["source"] != cookies.CookieSourceFile || up["logged_in"] != true || up["valid"] != true {
+		t.Fatalf("upload quality/source metadata: %v", up)
+	}
+	if up["last_sync_result"] != cookies.CookieSyncResultNever {
+		t.Fatalf("file upload must not fabricate browser sync: %v", up)
+	}
+	if up["uploaded_as"] == cookies.StableFileName {
+		t.Fatalf("stable filename upload must be staged as a drop-in: %v", up)
+	}
 	if _, ok := up["content"]; ok {
 		t.Fatal("upload must not return content")
+	}
+	for _, secret := range []string{"testlogin", "sidvalue"} {
+		if strings.Contains(rr.Body.String(), secret) {
+			t.Fatalf("upload response leaked cookie value %q", secret)
+		}
 	}
 
 	// stable file exists on disk
@@ -113,6 +131,9 @@ func TestAdminCookieUploadAndStatus(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &st)
 	if st["present"] != true {
 		t.Fatalf("status after upload: %v", st)
+	}
+	if st["source"] != cookies.CookieSourceFile || st["logged_in"] != true {
+		t.Fatalf("status source/login after upload: %v", st)
 	}
 }
 
@@ -142,5 +163,124 @@ func TestAdminCookieUploadRejectsNonText(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code == 200 {
 		t.Fatalf("binary upload should fail, body=%s", rr.Body.String())
+	}
+}
+
+type cookieSyncStatusStub struct {
+	status cookies.CookieSyncStatus
+	calls  int
+}
+
+func (s *cookieSyncStatusStub) CookieSyncStatus() cookies.CookieSyncStatus {
+	s.calls++
+	return s.status
+}
+
+func TestAdminCookieStatusBrowserMetadataIsAuthenticatedAndSanitized(t *testing.T) {
+	cfg := testCfg(t)
+	cfg.AdminPassword = "adm"
+	cfg.AdminSessionSecret = "sec"
+	cfg.AdminSessionTTL = time.Hour
+	cfg.CookiesDir = filepath.Join(cfg.DownloadDir, "browser-status")
+	cfg.CookiesFile = filepath.Join(cfg.CookiesDir, cookies.StableFileName)
+	cfg.CookiesFromBrowser = `chrome:C:\Users\SECRET_PROFILE\Default`
+	cfg.Proxy = "http://user:SECRET_PROXY@127.0.0.1:7890"
+	if err := os.MkdirAll(cfg.CookiesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jar := "# Netscape HTTP Cookie File\n" +
+		".youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tCOOKIE_SECRET_LOGIN\n" +
+		".google.com\tTRUE\t/\tTRUE\t0\tSID\tCOOKIE_SECRET_SID\n" +
+		".google.com\tTRUE\t/\tTRUE\t0\tSAPISID\tCOOKIE_SECRET_SAPISID\n"
+	if err := os.WriteFile(cfg.CookiesFile, []byte(jar), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2026, 7, 30, 12, 34, 56, 0, time.UTC)
+	provider := &cookieSyncStatusStub{status: cookies.CookieSyncStatus{
+		BrowserConfigured: true,
+		LastPhase:         cookies.CookieSyncPhasePeriodic,
+		LastResult:        cookies.CookieSyncResultFailed,
+		LastError:         "RAW_SECRET_PROFILE_ERROR",
+		LastUpdated:       true,
+		LastSyncAt:        fixed,
+		LastSuccessAt:     fixed.Add(-time.Hour),
+	}}
+	base := newTestServer(t, cfg, nil, nil)
+	srv, err := New(Options{
+		Config:           cfg,
+		Searcher:         base.searcher,
+		Sessions:         base.sessions,
+		Downloader:       base.downloader,
+		CookieSyncStatus: provider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	// Authentication is checked before the provider or filesystem status work.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/cookies/status", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized || provider.calls != 0 {
+		t.Fatalf("unauthorized status code=%d provider_calls=%d", rr.Code, provider.calls)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(`{"password":"adm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login %d %s", rr.Code, rr.Body.String())
+	}
+	adminCookie := cookieHeaderFromSetCookie(rr.Result().Header.Get("Set-Cookie"))
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/cookies/status", nil)
+	req.Header.Set("Cookie", adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls=%d want 1", provider.calls)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status["source"] != cookies.CookieSourceBrowser || status["browser_configured"] != true ||
+		status["logged_in"] != true || status["valid"] != true {
+		t.Fatalf("browser/file quality status mismatch: %v", status)
+	}
+	if status["last_sync_phase"] != cookies.CookieSyncPhasePeriodic ||
+		status["last_sync_result"] != cookies.CookieSyncResultFailed ||
+		status["last_sync_error"] != cookies.CookieSyncErrorGeneric ||
+		status["last_sync_updated"] != false {
+		t.Fatalf("bounded sync status mismatch: %v", status)
+	}
+	if status["last_sync_at"] != fixed.Format(time.RFC3339) ||
+		status["last_success_at"] != fixed.Add(-time.Hour).Format(time.RFC3339) {
+		t.Fatalf("sync timestamps mismatch: %v", status)
+	}
+	response := rr.Body.String()
+	for _, secret := range []string{
+		"SECRET_PROFILE",
+		"SECRET_PROXY",
+		"COOKIE_SECRET_LOGIN",
+		"COOKIE_SECRET_SID",
+		"COOKIE_SECRET_SAPISID",
+		"RAW_SECRET_PROFILE_ERROR",
+		cfg.CookiesDir,
+		cfg.CookiesFile,
+	} {
+		if strings.Contains(response, secret) {
+			t.Fatalf("status response leaked %q: %s", secret, response)
+		}
+	}
+	for _, forbiddenKey := range []string{"browser_spec", "proxy", "content", "raw", "cookies_text", "cookies_dir"} {
+		if _, ok := status[forbiddenKey]; ok {
+			t.Fatalf("status response included forbidden key %q", forbiddenKey)
+		}
 	}
 }
