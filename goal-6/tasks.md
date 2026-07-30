@@ -123,11 +123,22 @@
   - 安全边界：鉴权与恶意 provider 脱敏测试、管理状态/集成上传测试连续运行 50 次通过；响应和日志只使用枚举及质量元数据。除 `.gitignore` 已覆盖且早于本轮存在的运行时 `cookies/youtube.txt` 外，文件名扫描未发现浏览器 `Cookies`、`Login Data`、SQLite 数据库、`.uploading` 或 Cookie 临时快照；运行时 jar 正文未读取，diff 仅含明确的虚构测试标记。
   - 全量质量门：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 全部通过；本检查点没有 UI 改动。回滚仍可通过不配置浏览器来源恢复文件策略，T4–T6 也保持独立提交边界。
 
-- [ ] T7 前端 YouTube 登录路线实证与架构定稿
-  - 目标：确认当前 Windows/Docker 环境可用的服务端浏览器、持久化档案和安全交互方式；证明 Google 登录页可真实操作，而非普通 iframe 设想。
+- [x] T7 前端 YouTube 登录路线实证与架构定稿
+  - 目标：比较“已有外部浏览器档案同步”与“管理前端直接登录到服务专用持久化档案”两条独立路线的耐久性；确认当前 Windows/Docker 环境可用的服务端浏览器、持久化档案和安全交互方式，并证明 Google 登录页可真实操作，而非普通 iframe 设想。
   - 验证：最小实证记录浏览器版本、档案落盘、交互通道与登录态抽取结果；不保留账号输入或 Cookie 正文。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 根据用户追加说明，把“已有外部浏览器 profile”与“管理前端直接登录”固化为两条独立来源，而非串行步骤。耐久性比较后选择“服务专用持久化 Chromium profile + CDP Cookie 导出”为前端默认路线；现有 `COOKIES_FROM_BROWSER` 保留为本机高级选项，文件上传继续作为最终回退。
+    - Windows 10 x64 上使用隔离的 Playwright Chromium `148.0.7778.96` 做无界面实证；profile 的 `Local State`/Preferences、虚构 localStorage 和测试 Cookie 均跨进程重启保留，实际 YouTube/Google Cookie 元数据在第三次启动仍保留 7 个，随后整个临时 profile 已清理。
+    - Google 登录入口返回 `200` 并停留在 `accounts.google.com`；账号输入框可见、可编辑、可聚焦，未出现“不安全浏览器”页面。响应 `X-Frame-Options: DENY`，据此排除普通 iframe。
+    - CDP `Page.startScreencast` 连续收到 4 帧；`Input.dispatchMouseEvent` + `Input.insertText` 能驱动页面输入。最终 screencast 末帧为 `1280×800`，证明管理前端可采用同源受保护 WebSocket 转发图像/输入，而不依赖系统桌面。
+    - CDP `Storage.getCookies` 在匿名 YouTube 页面得到 8 个相关 Cookie、0 个认证 Cookie、`logged_in=false`，符合未输入账号的预期；只记录计数和布尔值，没有输出 Cookie 值。
+    - 新增 `goal-6/t7-login-route.md`，定稿来源仲裁、managed profile 生命周期、API/WebSocket、Cookie 原子提交、Windows/Docker 形态、安全边界和 T8–T10 硬验收；`goal-6/t7-probe-result.json` 保存机器可读的非敏感证据。
+  - 验证结果：
+    - `t7-probe-result.json` 通过 JSON 解析；实证临时 profile 已删除，Playwright Chromium 进程无残留。
+    - `google-login.png` 和修正取帧后的 `cdp-screencast.png` 均由独立视觉检查实际读图：登录输入为空且无敏感信息/错误，CDP 末帧显示完整夹具而非空白；截图仅位于被忽略的 `tmp/`，Git 中只记录 SHA-256。
+    - `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...` 全部通过；`gofmt -l .` 无输出，`git diff --check` 通过。
+    - 系统 Edge `150.0.4078.105` 与 Docker CLI `29.5.3` 已确认；当前 Docker daemon 未运行，Dockerfile 静态审计确认尚缺 Chromium，所需浏览器/持久卷约束已在架构文档固定。
+  - 剩余风险/下一步：本轮没有输入真实账号、密码或 2FA，因此只证明登录页面和交互/持久化基础成立；真实认证成功仍由 T10 硬验收。T8 下一轮按已定稿契约实现管理鉴权后的浏览器会话、CDP 通道、profile 持久化、Cookie 导出和来源仲裁，并补齐容器 Chromium 运行依赖及构建测试。
 
 - [ ] T8 实现服务端浏览器登录会话与持久化档案
   - 目标：管理鉴权后创建/终止隔离登录会话，使用专用持久化 profile，提供受保护交互通道并在登录后触发 Cookie 同步。

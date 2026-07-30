@@ -1,0 +1,58 @@
+{
+  "captured_at": "2026-07-30",
+  "environment": {
+    "windows": "Windows 10 Enterprise 10.0.19045 x64",
+    "system_edge": "150.0.4078.105",
+    "playwright": "1.60.0",
+    "chromium": "148.0.7778.96",
+    "docker_client": "29.5.3",
+    "docker_daemon_running": false
+  },
+  "profile": {
+    "local_storage_persisted": true,
+    "cookie_persisted": true,
+    "local_state_present": true,
+    "preferences_present": true,
+    "youtube_google_cookies_persisted_after_restart": true,
+    "persisted_youtube_google_cookie_count": 7,
+    "temporary_profile_removed": true
+  },
+  "cdp_channel": {
+    "screencast_frame_received": true,
+    "screencast_frame_count": 4,
+    "last_frame_bytes": 18090,
+    "device_width": 1280,
+    "device_height": 800,
+    "input_dispatch_value_matched": true
+  },
+  "google_login": {
+    "response_status": 200,
+    "final_host": "accounts.google.com",
+    "email_input_visible": true,
+    "email_input_editable": true,
+    "email_input_focusable": true,
+    "recognized_signin_surface": true,
+    "unsupported_browser_surface": false,
+    "x_frame_options": "DENY"
+  },
+  "cookie_metadata": {
+    "youtube_response_status": 200,
+    "youtube_final_host": "www.youtube.com",
+    "youtube_google_cookie_count": 8,
+    "auth_cookie_count": 0,
+    "logged_in": false,
+    "cookie_values_exported": false
+  },
+  "visual_review": {
+    "google_login_rendered": true,
+    "google_input_empty": true,
+    "google_sensitive_values_visible": false,
+    "cdp_fixture_rendered": true,
+    "cdp_frame_blank": false
+  },
+  "artifacts": {
+    "google_login_png_sha256": "126175E87A52047412EECB385B17CC65861AE600B097DF2978FFC3568F70CEAD",
+    "cdp_screencast_png_sha256": "A60C0986087BB25EA668A4460F6CF58997293EB1622FE7EAFC67BAF9470E6619",
+    "screenshots_tracked_by_git": false
+  }
+}
