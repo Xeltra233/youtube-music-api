@@ -60,11 +60,22 @@
   - 安全/敏感数据：检查 diff、未跟踪文件和浏览器数据库/临时文件特征，未发现真实 Cookie、浏览器 profile、账号、数据库或残留导出文件；测试仅使用明确的虚构值。
   - 文档/回滚：配置契约与后续前端登录目标已在 plan/tasks 同步；部署文档按 T11 集中更新。不配置浏览器来源仍保留旧文件策略，T3 可按独立提交回滚。
 
-- [ ] T4 接入启动同步与周期刷新生命周期
+- [x] T4 接入启动同步与周期刷新生命周期
   - 目标：启动时先尝试浏览器同步；后台串行刷新；失败继续使用稳定 jar；与 keepalive/退出等待正确协作。
   - 验证：生命周期测试或可控 fake runner；取消、超时、重复 tick 无泄漏。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 新增 `CookieLifecycle`：浏览器抽取与稳定 jar keepalive 共用同一操作锁和同步事件循环，外部 yt-dlp 进程不并发启动；浏览器 ticker 的积压会自然合并，keepalive 使用完成后重置的单 timer，避免慢任务形成并发或持续追赶。
+    - `main` 在解析稳定路径和 yt-dlp 后立即建立 signal context，并在创建搜索/下载客户端及启动 HTTP listener 前同步执行一次浏览器档案抽取；失败只记录安全摘要，继续消费原有稳定 jar 或保持匿名能力。
+    - 周期浏览器同步与 keepalive 合并为一个后台生命周期；浏览器来源为空、周期为 `0`、keepalive 关闭时不创建对应 timer/ticker，默认配置保持旧行为。
+    - shutdown signal 与 HTTP server 错误两条退出路径都会取消同一 context，并等待 cleanup 和 Cookie 生命周期 goroutine 结束；正在执行的浏览器抽取/keepalive 会收到取消并清理临时快照。
+    - 原有 `RunKeepAliveLoop` 改为复用统一生命周期，保留自定义 URL；`KeepAliveOnce` 不再捕获或回显 yt-dlp 原始输出，只返回超时、取消、可执行文件缺失或通用刷新失败类别。
+    - 生命周期日志只记录 phase、是否更新、登录态、Cookie 数和质量分，不记录 browser spec、profile、代理或 Cookie 正文。
+  - 验证结果：
+    - `go test ./internal/cookies -run '^TestCookieLifecycle' -count=50` 通过；`go test ./internal/cookies -count=20` 通过。
+    - `go test -race ./internal/cookies ./cmd/ytmusic-bridge` 通过；`go test ./...` 与 `go test -race ./...` 通过。
+    - fake lifecycle 覆盖启动参数/同步顺序、禁用配置、启动失败保留稳定 jar、周期失败后继续、浏览器与 keepalive 不重叠、浏览器/keepalive 取消、timer 重置、关闭 tick channel 和禁用时立即退出。
+    - `go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 通过；临时文件及浏览器数据库特征扫描无残留。
+  - 剩余风险/下一步：本轮尚未把最近同步结果和登录质量暴露给管理 API；真实 profile 的系统解密条件仍在 T7/T12 实证。下一轮执行 T5，增加只含元数据的管理状态并验证鉴权与脱敏。
 
 - [ ] T5 增加 Cookie 质量与管理状态元数据
   - 目标：状态返回 source、logged_in、最近同步时间/结果/错误摘要，不返回正文或敏感参数。

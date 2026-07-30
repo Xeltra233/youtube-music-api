@@ -2,6 +2,7 @@ package cookies
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -30,52 +31,15 @@ func RunKeepAliveLoop(ctx context.Context, opt KeepAliveOptions) {
 	if interval < time.Minute {
 		interval = time.Minute
 	}
-	// 启动后稍等再跑，避免和 boot 抢带宽；随后立即尝试一次。
-	t := time.NewTimer(3 * time.Second)
-	defer t.Stop()
-
-	run := func() {
-		// 每次前重新 Resolve 不在这里做：调用方应传入稳定路径。
-		// 若用户刚拷入文件，main 侧可在 loop 前再 resolve。
-		if !FileExistsNonEmpty(opt.CookiesFile) {
-			log.Printf("cookies keepalive: waiting for file %s", opt.CookiesFile)
-			return
-		}
-		// Never let yt-dlp rewrite the stable jar in place.
-		snap, cleanup, err := SnapshotForYtdlp(opt.CookiesFile)
-		if err != nil {
-			log.Printf("cookies keepalive: snapshot: %v", err)
-			return
-		}
-		if snap == "" {
-			log.Printf("cookies keepalive: waiting for file %s", opt.CookiesFile)
-			return
-		}
-		runOpt := opt
-		runOpt.CookiesFile = snap
-		if err := KeepAliveOnce(ctx, runOpt); err != nil {
-			cleanup()
-			log.Printf("cookies keepalive: %v", err)
-			return
-		}
-		if err := CommitSnapshotIfBetter(snap, opt.CookiesFile); err != nil {
-			cleanup()
-			log.Printf("cookies keepalive: commit: %v", err)
-			return
-		}
-		cleanup()
-		log.Printf("cookies keepalive: refreshed %s", opt.CookiesFile)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			run()
-			t.Reset(interval)
-		}
-	}
+	lifecycle := NewCookieLifecycle(nil, KeepAliveOnce, log.Printf)
+	lifecycle.Run(ctx, CookieLifecycleOptions{
+		StableFile:       opt.CookiesFile,
+		YtdlpPath:        opt.YtdlpPath,
+		Proxy:            opt.Proxy,
+		KeepAliveEnabled: true,
+		KeepAliveEvery:   interval,
+		KeepAliveURLs:    append([]string(nil), opt.URLs...),
+	})
 }
 
 // KeepAliveOnce 调用一次 yt-dlp，让其读写 cookie jar。
@@ -127,17 +91,18 @@ func KeepAliveOnce(ctx context.Context, opt KeepAliveOptions) error {
 		}
 		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		cmd := exec.CommandContext(cctx, ytdlp, args...)
-		out, err := cmd.CombinedOutput()
+		err := cmd.Run()
+		runContextErr := cctx.Err()
 		cancel()
 		if err != nil {
-			msg := strings.TrimSpace(string(out))
-			if len(msg) > 400 {
-				msg = msg[:400] + "..."
+			switch {
+			case errors.Is(runContextErr, context.DeadlineExceeded):
+				last = fmt.Errorf("cookies keepalive: yt-dlp timed out: %w", context.DeadlineExceeded)
+			case errors.Is(runContextErr, context.Canceled):
+				return context.Canceled
+			default:
+				last = errors.New("cookies keepalive: yt-dlp refresh failed")
 			}
-			if msg == "" {
-				msg = err.Error()
-			}
-			last = fmt.Errorf("yt-dlp keepalive %s: %s", u, msg)
 			continue
 		}
 		// 成功一次即可

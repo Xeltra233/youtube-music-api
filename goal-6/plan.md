@@ -73,7 +73,7 @@ COOKIES_BROWSER_SYNC_ON_START=true
 - 浏览器档案与服务需处于可解密的同 OS/用户上下文；容器场景应挂载同环境生成的持久化档案。
 - `COOKIES_KEEPALIVE` 继续作为稳定 jar 的刷新/回退机制，不取代浏览器档案同步。
 
-变量名已在 T2 固化；T7 必须同步 `.env.example` 和 README。
+变量名已在 T2 固化；T11 必须同步 `.env.example` 和 README。
 
 ### 3.3 同步流程
 

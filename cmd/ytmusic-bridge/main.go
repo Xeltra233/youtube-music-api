@@ -68,6 +68,28 @@ func run() error {
 		}
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cookieLifecycle := cookies.NewCookieLifecycle(nil, nil, log.Printf)
+	cookieLifecycleOptions := cookies.CookieLifecycleOptions{
+		CookiesDir:         cfg.CookiesDir,
+		StableFile:         cfg.CookiesFile,
+		YtdlpPath:          cfg.YtdlpPath,
+		Proxy:              cfg.Proxy,
+		BrowserSpec:        cfg.CookiesFromBrowser,
+		BrowserSyncOnStart: cfg.BrowserCookieStartupSyncEnabled(),
+		BrowserSyncEvery:   cfg.CookiesBrowserSyncEvery,
+		KeepAliveEnabled:   cfg.CookiesKeepAlive,
+		KeepAliveEvery:     cfg.CookiesKeepAliveEvery,
+	}
+	// A configured browser profile gets one bounded attempt before clients and
+	// the HTTP listener begin consuming the stable jar. Failure is non-fatal.
+	cookieLifecycle.RunStartup(ctx, cookieLifecycleOptions)
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	ytClient, err := ytmusic.New(ytmusic.Options{
 		Timeout:     cfg.SearchTimeout,
 		Proxy:       cfg.Proxy,
@@ -87,11 +109,14 @@ func run() error {
 	}
 
 	ytdlpVer := ""
-	if ver, err := download.YtdlpVersion(context.Background(), cfg.YtdlpPath); err != nil {
+	if ver, err := download.YtdlpVersion(ctx, cfg.YtdlpPath); err != nil {
 		log.Printf("warning: yt-dlp version probe failed: %v", err)
 	} else {
 		ytdlpVer = ver
 		log.Printf("yt-dlp version: %s", ytdlpVer)
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 
 	api, err := httpapi.New(httpapi.Options{
@@ -111,9 +136,6 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	// Background cleanup: session TTL + cache TTL/max-total.
 	cleanupDone := make(chan struct{})
 	go func() {
@@ -121,65 +143,12 @@ func run() error {
 		runCleanupLoop(ctx, cfg, sess, dl)
 	}()
 
-	// Cookie 自动保活（环境变量 COOKIES_KEEPALIVE=1 开启）。
-	keepaliveDone := make(chan struct{})
+	// Browser profile synchronization and stable-jar keepalive share one
+	// serialized lifecycle so they cannot overwrite one another out of order.
+	cookieLifecycleDone := make(chan struct{})
 	go func() {
-		defer close(keepaliveDone)
-		if !cfg.CookiesKeepAlive {
-			return
-		}
-		log.Printf("cookies keepalive: enabled every %s", cfg.CookiesKeepAliveEvery)
-		ticker := time.NewTicker(cfg.CookiesKeepAliveEvery)
-		defer ticker.Stop()
-		stable := cfg.CookiesFile
-		runOnce := func() {
-			// 用户新丢的任意文件名 txt → 提升到稳定 youtube.txt（路径不变，无数据竞争）。
-			_ = cookies.RefreshDropIns(cfg.CookiesDir, stable)
-			if !cookies.FileExistsNonEmpty(stable) {
-				log.Printf("cookies keepalive: waiting for file in %s", cfg.CookiesDir)
-				return
-			}
-			snap, cleanup, err := cookies.SnapshotForYtdlp(stable)
-			if err != nil {
-				log.Printf("cookies keepalive: snapshot: %v", err)
-				return
-			}
-			if snap == "" {
-				log.Printf("cookies keepalive: waiting for file in %s", cfg.CookiesDir)
-				return
-			}
-			if err := cookies.KeepAliveOnce(ctx, cookies.KeepAliveOptions{
-				CookiesFile: snap,
-				YtdlpPath:   cfg.YtdlpPath,
-				Proxy:       cfg.Proxy,
-			}); err != nil {
-				cleanup()
-				log.Printf("cookies keepalive: %v", err)
-				return
-			}
-			if err := cookies.CommitSnapshotIfBetter(snap, stable); err != nil {
-				cleanup()
-				log.Printf("cookies keepalive: commit: %v", err)
-				return
-			}
-			cleanup()
-			log.Printf("cookies keepalive: refreshed %s", stable)
-		}
-		// 启动后短延迟先跑一次
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(3 * time.Second):
-			runOnce()
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				runOnce()
-			}
-		}
+		defer close(cookieLifecycleDone)
+		cookieLifecycle.Run(ctx, cookieLifecycleOptions)
 	}()
 
 	errCh := make(chan error, 1)
@@ -194,7 +163,7 @@ func run() error {
 	case err := <-errCh:
 		stop()
 		<-cleanupDone
-		<-keepaliveDone
+		<-cookieLifecycleDone
 		return err
 	case <-ctx.Done():
 		log.Println("shutdown signal received, draining...")
@@ -203,7 +172,7 @@ func run() error {
 		err := srv.Shutdown(shutdownCtx)
 		// Wait for cleanup loop to exit after ctx cancel.
 		<-cleanupDone
-		<-keepaliveDone
+		<-cookieLifecycleDone
 		// Final cleanup pass before exit.
 		_ = sess.Cleanup()
 		if _, cerr := dl.Cleanup(); cerr != nil {
