@@ -95,18 +95,33 @@
     - `go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 通过；仓库未发现浏览器数据库、真实 Cookie 或临时导出残留。
   - 剩余风险/下一步：状态目前描述稳定 jar 与后台同步，不包含后续前端浏览器登录会话本身；该部分由 T8/T9 扩展。下一轮执行 T6，证明同一同步后 jar 被搜索和音频/MP4 下载共同消费，并验证上传回退。
 
-- [ ] T6 搜索与下载共用同步后稳定 jar 的集成回归
+- [x] T6 搜索与下载共用同步后稳定 jar 的集成回归
   - 目标：证明浏览器同步后的 jar 同时被 InnerTube 搜索和 yt-dlp 下载快照消费；上传文件仍可回退。
   - 验证：跨 package 集成测试；音频/mp4 下载与搜索既有测试全绿。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 新增 `TestCookiePipelineBrowserSyncAndUploadFallback` 跨包回归，使用真实 `BrowserSyncer`、`ytmusic.Client`、`download.Downloader` 和管理 HTTP 上传处理器串起稳定 jar 全链路；搜索客户端与下载器在稳定文件尚不存在时先构造，证明后续按同一路径动态读取，而非缓存旧 Cookie 正文。
+    - fake browser runner 只负责模拟 yt-dlp 抽取并产出已登录 Netscape jar；同步器仍执行真实质量判定、包级锁、原子提升和临时文件清理。InnerTube 测试上游实际捕获请求 `Cookie` header，确认包含本轮同步生成的登录 Cookie。
+    - 音频 `mp3` 与视频 `mp4` 均通过真实下载器构造 yt-dlp 参数并消费稳定 jar 的独立快照；测试 runner 模拟 yt-dlp 改写快照，随后验证稳定 `youtube.txt` 字节不变、两份快照均已清理，且 mp4 仍经过视频流探针。
+    - 通过管理端登录后上传名为 `youtube.txt` 的新 jar，验证它先作为 drop-in 提升为稳定文件；不重建搜索客户端或下载器，搜索、音频与 mp4 随即共同读取上传后的新一代 Cookie，证明文件回退和运行期热更新仍成立。
+    - 管理上传响应不包含测试 Cookie 标记；浏览器抽取与下载快照没有 `.browser-cookies-*` / `.ytdlp-cookies-*` 残留。
+  - 验证结果：
+    - 新集成测试连续运行 50 次通过；`internal/cookies`、`internal/ytmusic`、`internal/download`、`internal/httpapi` 连续 10 次测试及四包 race 测试通过。
+    - `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...` 全部通过。
+    - `gofmt -l .` 无输出，`git diff --check` 通过；未发现浏览器数据库、账号材料或临时导出文件。工作区已有的运行时 `cookies/youtube.txt` 受 `.gitignore` 保护且修改时间早于本轮，本轮未读取正文、未改动、未纳入 diff。
+  - 剩余风险/下一步：本轮以可重复的 fake browser/yt-dlp runner 证明稳定 jar 的数据流和隔离边界；真实服务端浏览器、持久化 profile 与交互登录条件由下一轮 T7 实证，最终真实账号链路仍由 T10 验收。
 
 ## 大型检查点 B（T4–T6 后）
 
-- [ ] 并发、数据一致性、取消与错误路径全面检查。
-- [ ] `go test ./...`、`go vet ./...`、格式检查通过。
-- [ ] 管理状态和日志不含 Cookie 正文、浏览器解密材料或账号信息。
-- [ ] 结果记录：待填。
+- [x] 并发、数据一致性、取消与错误路径全面检查。
+- [x] `go test ./...`、`go vet ./...`、格式检查通过。
+- [x] 管理状态和日志不含 Cookie 正文、浏览器解密材料或账号信息。
+- [x] 结果记录：
+  - 需求边界：T4–T6 已完成生命周期编排、只读管理状态和稳定 jar 消费回归；未提前实现 T7–T10 的服务端浏览器登录与前端 UI，用户追加的前端真实登录硬验收仍完整保留。
+  - 并发/取消：生命周期串行、浏览器与 keepalive 互斥、在途浏览器同步取消、在途 keepalive 取消及快照清理、状态进行中到取消转换等定向测试连续运行 50 次通过；`go test -race ./...` 通过。
+  - 数据一致性：浏览器候选以质量保护方式原子写入稳定 jar；InnerTube 每次请求重读稳定路径，下载每次创建隔离快照；模拟 yt-dlp 原地改写后稳定文件未变化，管理上传提升后现有消费者立即切换到新内容。
+  - 错误/回退：浏览器失败保留旧 jar、弱候选拒绝、状态错误枚举收敛、上传文件回退以及音频/mp4 两条下载路径均有回归；取消和失败路径没有 Cookie 临时文件残留。
+  - 安全边界：鉴权与恶意 provider 脱敏测试、管理状态/集成上传测试连续运行 50 次通过；响应和日志只使用枚举及质量元数据。除 `.gitignore` 已覆盖且早于本轮存在的运行时 `cookies/youtube.txt` 外，文件名扫描未发现浏览器 `Cookies`、`Login Data`、SQLite 数据库、`.uploading` 或 Cookie 临时快照；运行时 jar 正文未读取，diff 仅含明确的虚构测试标记。
+  - 全量质量门：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`gofmt -l .`、`git diff --check` 全部通过；本检查点没有 UI 改动。回滚仍可通过不配置浏览器来源恢复文件策略，T4–T6 也保持独立提交边界。
 
 - [ ] T7 前端 YouTube 登录路线实证与架构定稿
   - 目标：确认当前 Windows/Docker 环境可用的服务端浏览器、持久化档案和安全交互方式；证明 Google 登录页可真实操作，而非普通 iframe 设想。
