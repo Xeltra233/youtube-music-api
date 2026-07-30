@@ -166,6 +166,72 @@ func TestAdminCookieUploadRejectsNonText(t *testing.T) {
 	}
 }
 
+func TestAdminCookieUploadStaysFallbackWhileManagedSourceIsActive(t *testing.T) {
+	cfg := testCfg(t)
+	cfg.AdminPassword = "adm"
+	cfg.AdminSessionSecret = "sec"
+	cfg.AdminSessionTTL = time.Hour
+	cfg.CookiesDir = filepath.Join(cfg.DownloadDir, "managed-fallback")
+	cfg.CookiesFile = filepath.Join(cfg.CookiesDir, cookies.StableFileName)
+	if err := os.MkdirAll(cfg.CookiesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	managedJar := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tmanaged-login\n.google.com\tTRUE\t/\tTRUE\t0\tSID\tmanaged-sid\n.google.com\tTRUE\t/\tTRUE\t0\tSAPISID\tmanaged-api\n"
+	if err := os.WriteFile(cfg.CookiesFile, []byte(managedJar), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := cookies.NewSourceArbiter(cookies.CookieSourceModeAuto, false)
+	source.SetManagedAuthenticated(true)
+	srv := newTestServer(t, cfg, nil, nil)
+	srv.cookieSource = source
+	h := srv.Handler()
+
+	login := doJSON(t, h, http.MethodPost, "/api/admin/login", map[string]any{"password": "adm"}, nil)
+	cookie := cookieHeaderFromSetCookie(login.Header().Get("Set-Cookie"))
+	fallbackJar := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tfallback-login\n.google.com\tTRUE\t/\tTRUE\t0\tSID\tfallback-sid\n.google.com\tTRUE\t/\tTRUE\t0\tSAPISID\tfallback-api\n"
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "fallback.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte(fallbackJar))
+	_ = writer.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/cookies/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Cookie", cookie)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	afterUpload, err := os.ReadFile(cfg.CookiesFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterUpload) != managedJar {
+		t.Fatal("fallback upload replaced the active managed jar")
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &payload)
+	if payload["source"] != cookies.CookieSourceManaged || payload["managed_authenticated"] != true {
+		t.Fatalf("managed status=%v", payload)
+	}
+
+	source.SetManagedAuthenticated(false)
+	status := doJSON(t, h, http.MethodGet, "/api/admin/cookies/status", nil, map[string]string{"Cookie": cookie})
+	if status.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
+	}
+	afterFallback, err := os.ReadFile(cfg.CookiesFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterFallback) != fallbackJar {
+		t.Fatal("stored fallback was not promoted after managed source ended")
+	}
+}
+
 type cookieSyncStatusStub struct {
 	status cookies.CookieSyncStatus
 	calls  int

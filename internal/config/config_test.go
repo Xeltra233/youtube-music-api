@@ -50,9 +50,84 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CookiesBrowserSyncEvery != 6*time.Hour {
 		t.Errorf("浏览器 Cookie 周期默认应为 6h，实际 %v", cfg.CookiesBrowserSyncEvery)
 	}
+	if cfg.CookieSourceMode != "auto" || cfg.YouTubeLoginProfileDir == "" || !filepath.IsAbs(cfg.YouTubeLoginProfileDir) {
+		t.Errorf("managed login defaults: mode=%q profile=%q", cfg.CookieSourceMode, cfg.YouTubeLoginProfileDir)
+	}
+	if !cfg.YouTubeLoginHeadless || cfg.YouTubeLoginSessionTTL != 15*time.Minute || cfg.YouTubeLoginRefreshEvery != 6*time.Hour {
+		t.Errorf("managed login defaults: headless=%t ttl=%v refresh=%v", cfg.YouTubeLoginHeadless, cfg.YouTubeLoginSessionTTL, cfg.YouTubeLoginRefreshEvery)
+	}
+	if !cfg.ManagedCookieSourceEnabled() {
+		t.Error("auto mode should enable the managed route")
+	}
 	if cfg.BrowserCookieStartupSyncEnabled() || cfg.BrowserCookiePeriodicSyncEnabled() {
 		t.Error("没有浏览器来源时不应调度同步")
 	}
+}
+
+func TestManagedLoginConfigAndSourceModes(t *testing.T) {
+	clearEnv(t)
+	profile := filepath.Join(t.TempDir(), "profile")
+	t.Setenv("COOKIE_SOURCE_MODE", "MANAGED")
+	t.Setenv("YOUTUBE_LOGIN_BROWSER_PATH", `C:\Browser\chrome.exe`)
+	t.Setenv("YOUTUBE_LOGIN_PROFILE_DIR", profile)
+	t.Setenv("YOUTUBE_LOGIN_HEADLESS", "false")
+	t.Setenv("YOUTUBE_LOGIN_SESSION_TTL_SECONDS", "1200")
+	t.Setenv("YOUTUBE_LOGIN_REFRESH_INTERVAL_SECONDS", "900")
+	t.Setenv("COOKIES_FROM_BROWSER", "chrome:Default")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CookieSourceMode != "managed" || cfg.YouTubeLoginHeadless {
+		t.Fatalf("mode/headless=%q/%t", cfg.CookieSourceMode, cfg.YouTubeLoginHeadless)
+	}
+	if cfg.YouTubeLoginSessionTTL != 20*time.Minute || cfg.YouTubeLoginRefreshEvery != 15*time.Minute {
+		t.Fatalf("ttl/refresh=%v/%v", cfg.YouTubeLoginSessionTTL, cfg.YouTubeLoginRefreshEvery)
+	}
+	if cfg.BrowserCookieStartupSyncEnabled() || cfg.BrowserCookiePeriodicSyncEnabled() {
+		t.Fatal("managed mode must not schedule the independent external source")
+	}
+	if !cfg.ManagedCookieSourceEnabled() {
+		t.Fatal("managed route should be enabled")
+	}
+}
+
+func TestManagedLoginConfigBoundsAndDisable(t *testing.T) {
+	t.Run("bounds", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("YOUTUBE_LOGIN_SESSION_TTL_SECONDS", "1")
+		t.Setenv("YOUTUBE_LOGIN_REFRESH_INTERVAL_SECONDS", "1")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.YouTubeLoginSessionTTL != time.Minute || cfg.YouTubeLoginRefreshEvery != time.Minute {
+			t.Fatalf("bounded ttl/refresh=%v/%v", cfg.YouTubeLoginSessionTTL, cfg.YouTubeLoginRefreshEvery)
+		}
+	})
+	t.Run("refresh_zero", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("YOUTUBE_LOGIN_REFRESH_INTERVAL_SECONDS", "0")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.YouTubeLoginRefreshEvery != 0 {
+			t.Fatalf("refresh=%v", cfg.YouTubeLoginRefreshEvery)
+		}
+	})
+	t.Run("file_mode", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIE_SOURCE_MODE", "file")
+		t.Setenv("COOKIES_FROM_BROWSER", "chrome")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ManagedCookieSourceEnabled() || cfg.BrowserCookieStartupSyncEnabled() || cfg.BrowserCookiePeriodicSyncEnabled() {
+			t.Fatal("file mode should disable both active browser sources")
+		}
+	})
 }
 
 func TestBrowserCookieConfigFromEnv(t *testing.T) {
@@ -296,6 +371,13 @@ func TestInvalidValues(t *testing.T) {
 			t.Error("负数 COOKIES_BROWSER_SYNC_INTERVAL_SECONDS 应报错")
 		}
 	})
+	t.Run("cookie_source_mode", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIE_SOURCE_MODE", "serial")
+		if _, err := Load(""); err == nil {
+			t.Error("invalid COOKIE_SOURCE_MODE should fail")
+		}
+	})
 }
 
 // 数值项写错必须 fail fast，不能静默回落默认值（否则用户改了配置却毫无感知）。
@@ -511,6 +593,8 @@ func clearEnv(t *testing.T) {
 		"DOWNLOAD_DIR", "AUDIO_FORMAT", "AUDIO_BITRATE", "FFMPEG_LOCATION", "YTDLP_PATH",
 		"PROXY", "COOKIES_FILE", "COOKIES_DIR", "COOKIES_KEEPALIVE", "COOKIES_KEEPALIVE_INTERVAL_SECONDS",
 		"COOKIES_FROM_BROWSER", "COOKIES_BROWSER_SYNC_ON_START", "COOKIES_BROWSER_SYNC_INTERVAL_SECONDS",
+		"COOKIE_SOURCE_MODE", "YOUTUBE_LOGIN_BROWSER_PATH", "YOUTUBE_LOGIN_PROFILE_DIR",
+		"YOUTUBE_LOGIN_HEADLESS", "YOUTUBE_LOGIN_SESSION_TTL_SECONDS", "YOUTUBE_LOGIN_REFRESH_INTERVAL_SECONDS",
 		"MAX_CONCURRENT_DOWNLOADS", "MAX_FILESIZE_MB",
 		"DOWNLOAD_TIMEOUT_SECONDS", "SESSION_TTL_SECONDS", "CACHE_TTL_SECONDS",
 		"CACHE_MAX_TOTAL_MB", "CLEANUP_INTERVAL_SECONDS", "SEARCH_TIMEOUT_SECONDS",

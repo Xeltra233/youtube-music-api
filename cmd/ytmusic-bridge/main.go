@@ -16,6 +16,7 @@ import (
 	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 	"github.com/xeltra/ytmusic-bridge/internal/download"
 	"github.com/xeltra/ytmusic-bridge/internal/httpapi"
+	"github.com/xeltra/ytmusic-bridge/internal/managedlogin"
 	"github.com/xeltra/ytmusic-bridge/internal/search"
 	"github.com/xeltra/ytmusic-bridge/internal/session"
 	"github.com/xeltra/ytmusic-bridge/internal/version"
@@ -71,7 +72,41 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	cookieSource := cookies.NewSourceArbiter(cfg.CookieSourceMode, cfg.HasBrowserCookieSource())
+	managedLogin, err := managedlogin.New(managedlogin.Options{
+		Context:         ctx,
+		BrowserPath:     cfg.YouTubeLoginBrowserPath,
+		ProfileDir:      cfg.YouTubeLoginProfileDir,
+		Headless:        cfg.YouTubeLoginHeadless,
+		SessionTTL:      cfg.YouTubeLoginSessionTTL,
+		RefreshInterval: cfg.YouTubeLoginRefreshEvery,
+		StableFile:      cfg.CookiesFile,
+		Source:          cookieSource,
+		Logf:            log.Printf,
+	})
+	if err != nil {
+		return err
+	}
+	defer managedLogin.Close()
+	if cfg.ManagedCookieSourceEnabled() && managedLogin.HasPersistentProfile() {
+		probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		result, probeErr := managedLogin.RefreshOnce(probeCtx)
+		cancel()
+		if probeErr == nil {
+			log.Printf(
+				"youtube login: startup profile updated=%t logged_in=%t cookies=%d score=%d",
+				result.Updated, result.LoggedIn, result.CookieCount, result.QualityScore,
+			)
+		} else if ctx.Err() == nil {
+			log.Printf("youtube login: startup profile result=unavailable")
+		}
+	}
+
 	cookieLifecycle := cookies.NewCookieLifecycle(nil, nil, log.Printf)
+	browserSyncEvery := time.Duration(0)
+	if cfg.BrowserCookiePeriodicSyncEnabled() {
+		browserSyncEvery = cfg.CookiesBrowserSyncEvery
+	}
 	cookieLifecycleOptions := cookies.CookieLifecycleOptions{
 		CookiesDir:         cfg.CookiesDir,
 		StableFile:         cfg.CookiesFile,
@@ -79,9 +114,10 @@ func run() error {
 		Proxy:              cfg.Proxy,
 		BrowserSpec:        cfg.CookiesFromBrowser,
 		BrowserSyncOnStart: cfg.BrowserCookieStartupSyncEnabled(),
-		BrowserSyncEvery:   cfg.CookiesBrowserSyncEvery,
+		BrowserSyncEvery:   browserSyncEvery,
 		KeepAliveEnabled:   cfg.CookiesKeepAlive,
 		KeepAliveEvery:     cfg.CookiesKeepAliveEvery,
+		SourceArbiter:      cookieSource,
 	}
 	// A configured browser profile gets one bounded attempt before clients and
 	// the HTTP listener begin consuming the stable jar. Failure is non-fatal.
@@ -126,6 +162,8 @@ func run() error {
 		Downloader:       dl,
 		YtdlpVersion:     ytdlpVer,
 		CookieSyncStatus: cookieLifecycle,
+		CookieSource:     cookieSource,
+		ManagedLogin:     managedLogin,
 	})
 	if err != nil {
 		return err
@@ -152,6 +190,12 @@ func run() error {
 		cookieLifecycle.Run(ctx, cookieLifecycleOptions)
 	}()
 
+	managedRefreshDone := make(chan struct{})
+	go func() {
+		defer close(managedRefreshDone)
+		managedLogin.RunRefreshLoop(ctx)
+	}()
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("ytmusic-bridge %s listening on http://%s", version.Version, cfg.Addr())
@@ -163,17 +207,21 @@ func run() error {
 	select {
 	case err := <-errCh:
 		stop()
+		managedLogin.Close()
 		<-cleanupDone
 		<-cookieLifecycleDone
+		<-managedRefreshDone
 		return err
 	case <-ctx.Done():
 		log.Println("shutdown signal received, draining...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		err := srv.Shutdown(shutdownCtx)
+		managedLogin.Close()
 		// Wait for cleanup loop to exit after ctx cancel.
 		<-cleanupDone
 		<-cookieLifecycleDone
+		<-managedRefreshDone
 		// Final cleanup pass before exit.
 		_ = sess.Cleanup()
 		if _, cerr := dl.Cleanup(); cerr != nil {

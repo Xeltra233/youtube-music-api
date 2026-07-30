@@ -66,6 +66,9 @@ type CookieLifecycleOptions struct {
 	KeepAliveEvery        time.Duration
 	KeepAliveInitialDelay time.Duration
 	KeepAliveURLs         []string
+	// SourceArbiter keeps managed/external/file operations serialized and
+	// suppresses external sync while an authenticated managed profile is active.
+	SourceArbiter *SourceArbiter
 }
 
 // RunStartup attempts one browser extraction before the HTTP server starts.
@@ -170,6 +173,13 @@ func (l *CookieLifecycle) runBrowserSync(ctx context.Context, opt CookieLifecycl
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if opt.SourceArbiter != nil {
+		release, allowed := opt.SourceArbiter.BeginExternal()
+		if !allowed {
+			return
+		}
+		defer release()
+	}
 	l.operationMu.Lock()
 	defer l.operationMu.Unlock()
 	if ctx.Err() != nil {
@@ -207,6 +217,10 @@ func (l *CookieLifecycle) runBrowserSync(ctx context.Context, opt CookieLifecycl
 func (l *CookieLifecycle) runKeepAlive(ctx context.Context, opt CookieLifecycleOptions) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if opt.SourceArbiter != nil {
+		release := opt.SourceArbiter.LockOperation()
+		defer release()
 	}
 	l.operationMu.Lock()
 	defer l.operationMu.Unlock()

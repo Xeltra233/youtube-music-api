@@ -135,6 +135,14 @@ func (m *Manager) Validate(token string) error {
 	return nil
 }
 
+// Fingerprint returns a fixed-size, non-reversible identifier suitable for
+// binding another short-lived capability to an admin session. The raw session
+// token must never be persisted in those secondary session objects.
+func Fingerprint(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
 func (m *Manager) issue(exp time.Time) (string, error) {
 	var nb [16]byte
 	if _, err := rand.Read(nb[:]); err != nil {

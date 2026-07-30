@@ -50,6 +50,12 @@ type Config struct {
 	CookiesFromBrowser        string
 	CookiesBrowserSyncOnStart bool
 	CookiesBrowserSyncEvery   time.Duration // 0 disables periodic sync
+	CookieSourceMode          string        // auto | managed | external | file
+	YouTubeLoginBrowserPath   string
+	YouTubeLoginProfileDir    string
+	YouTubeLoginHeadless      bool
+	YouTubeLoginSessionTTL    time.Duration
+	YouTubeLoginRefreshEvery  time.Duration // 0 disables periodic managed refresh
 	CookiesKeepAlive          bool
 	CookiesKeepAliveEvery     time.Duration
 	MaxConcurrentDownloads    int
@@ -81,9 +87,15 @@ var chromiumCookieBrowsers = map[string]bool{
 	"opera": true, "vivaldi": true, "whale": true,
 }
 
+var validCookieSourceModes = map[string]bool{
+	"auto": true, "managed": true, "external": true, "file": true,
+}
+
 const (
 	defaultCookiesBrowserSyncEvery = 6 * time.Hour
 	minimumCookiesBrowserSyncEvery = time.Minute
+	defaultYouTubeLoginSessionTTL  = 15 * time.Minute
+	defaultYouTubeLoginRefresh     = 6 * time.Hour
 	maxCookiesFromBrowserSpecBytes = 4096
 )
 
@@ -120,9 +132,15 @@ func Load(envFile string) (*Config, error) {
 			"COOKIES_BROWSER_SYNC_INTERVAL_SECONDS",
 			defaultCookiesBrowserSyncEvery,
 		),
-		CookiesKeepAlive:       l.bool("COOKIES_KEEPALIVE", false),
-		CookiesKeepAliveEvery:  l.seconds("COOKIES_KEEPALIVE_INTERVAL_SECONDS", 6*time.Hour),
-		MaxConcurrentDownloads: l.int("MAX_CONCURRENT_DOWNLOADS", 2),
+		CookieSourceMode:         strings.ToLower(l.str("COOKIE_SOURCE_MODE", "auto")),
+		YouTubeLoginBrowserPath:  l.str("YOUTUBE_LOGIN_BROWSER_PATH", ""),
+		YouTubeLoginProfileDir:   l.str("YOUTUBE_LOGIN_PROFILE_DIR", "browser-profile"),
+		YouTubeLoginHeadless:     l.bool("YOUTUBE_LOGIN_HEADLESS", true),
+		YouTubeLoginSessionTTL:   l.seconds("YOUTUBE_LOGIN_SESSION_TTL_SECONDS", defaultYouTubeLoginSessionTTL),
+		YouTubeLoginRefreshEvery: l.seconds("YOUTUBE_LOGIN_REFRESH_INTERVAL_SECONDS", defaultYouTubeLoginRefresh),
+		CookiesKeepAlive:         l.bool("COOKIES_KEEPALIVE", false),
+		CookiesKeepAliveEvery:    l.seconds("COOKIES_KEEPALIVE_INTERVAL_SECONDS", 6*time.Hour),
+		MaxConcurrentDownloads:   l.int("MAX_CONCURRENT_DOWNLOADS", 2),
 		// Official music videos are often >50MB; default high enough for common 1080p MVs.
 		MaxFilesizeMB:   l.int("MAX_FILESIZE_MB", 500),
 		DownloadTimeout: l.seconds("DOWNLOAD_TIMEOUT_SECONDS", 300*time.Second),
@@ -204,6 +222,13 @@ func (c *Config) normalize() error {
 
 	c.CookiesFile = strings.TrimSpace(c.CookiesFile)
 	c.CookiesDir = strings.TrimSpace(c.CookiesDir)
+	c.CookieSourceMode = strings.ToLower(strings.TrimSpace(c.CookieSourceMode))
+	if c.CookieSourceMode == "" {
+		c.CookieSourceMode = "auto"
+	}
+	if !validCookieSourceModes[c.CookieSourceMode] {
+		return fmt.Errorf("COOKIE_SOURCE_MODE 只支持 auto/managed/external/file，当前 %q", c.CookieSourceMode)
+	}
 	browserSpec, err := normalizeCookiesFromBrowserSpec(c.CookiesFromBrowser)
 	if err != nil {
 		return fmt.Errorf("COOKIES_FROM_BROWSER 非法: %w", err)
@@ -214,6 +239,20 @@ func (c *Config) normalize() error {
 	}
 	if c.CookiesBrowserSyncEvery > 0 && c.CookiesBrowserSyncEvery < minimumCookiesBrowserSyncEvery {
 		c.CookiesBrowserSyncEvery = minimumCookiesBrowserSyncEvery
+	}
+	c.YouTubeLoginBrowserPath = strings.TrimSpace(c.YouTubeLoginBrowserPath)
+	c.YouTubeLoginProfileDir = strings.TrimSpace(c.YouTubeLoginProfileDir)
+	if c.YouTubeLoginProfileDir == "" {
+		c.YouTubeLoginProfileDir = "browser-profile"
+	}
+	if c.YouTubeLoginSessionTTL < time.Minute {
+		c.YouTubeLoginSessionTTL = time.Minute
+	}
+	if c.YouTubeLoginSessionTTL > 30*time.Minute {
+		c.YouTubeLoginSessionTTL = 30 * time.Minute
+	}
+	if c.YouTubeLoginRefreshEvery > 0 && c.YouTubeLoginRefreshEvery < time.Minute {
+		c.YouTubeLoginRefreshEvery = time.Minute
 	}
 	if c.CookiesKeepAliveEvery < time.Minute {
 		c.CookiesKeepAliveEvery = time.Minute
@@ -237,6 +276,11 @@ func (c *Config) normalize() error {
 	if absDir, err := filepath.Abs(c.CookiesDir); err == nil {
 		c.CookiesDir = absDir
 	}
+	profileDir, err := filepath.Abs(c.YouTubeLoginProfileDir)
+	if err != nil {
+		return fmt.Errorf("YOUTUBE_LOGIN_PROFILE_DIR 无法解析为绝对路径: %w", err)
+	}
+	c.YouTubeLoginProfileDir = profileDir
 	return nil
 }
 
@@ -252,12 +296,27 @@ func (c *Config) HasBrowserCookieSource() bool {
 
 // BrowserCookieStartupSyncEnabled reports whether startup should run one sync.
 func (c *Config) BrowserCookieStartupSyncEnabled() bool {
-	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncOnStart
+	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncOnStart &&
+		(c.cookieSourceMode() == "auto" || c.cookieSourceMode() == "external")
 }
 
 // BrowserCookiePeriodicSyncEnabled reports whether the periodic loop is enabled.
 func (c *Config) BrowserCookiePeriodicSyncEnabled() bool {
-	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncEvery > 0
+	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncEvery > 0 &&
+		(c.cookieSourceMode() == "auto" || c.cookieSourceMode() == "external")
+}
+
+// ManagedCookieSourceEnabled reports whether the managed browser route is
+// available as a configured source option.
+func (c *Config) ManagedCookieSourceEnabled() bool {
+	return c != nil && (c.cookieSourceMode() == "auto" || c.cookieSourceMode() == "managed")
+}
+
+func (c *Config) cookieSourceMode() string {
+	if c == nil || strings.TrimSpace(c.CookieSourceMode) == "" {
+		return "auto"
+	}
+	return strings.ToLower(strings.TrimSpace(c.CookieSourceMode))
 }
 
 // Addr 返回 http.Server 监听地址。

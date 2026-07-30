@@ -107,6 +107,26 @@ func TestAdminDisabled(t *testing.T) {
 	}
 }
 
+func TestAdminSessionCookieSecureForHTTPS(t *testing.T) {
+	cfg := testCfg(t)
+	cfg.AdminPassword = "adm-pass"
+	cfg.AdminSessionSecret = "adm-secret"
+	cfg.AdminSessionTTL = time.Hour
+	h := newTestServer(t, cfg, nil, nil).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "https://music.example.com/api/admin/login", bytes.NewBufferString(`{"password":"adm-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	setCookie := rr.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "; Secure") || !strings.Contains(setCookie, "; HttpOnly") {
+		t.Fatalf("HTTPS admin cookie flags=%q", setCookie)
+	}
+}
+
 func cookieHeaderFromSetCookie(setCookie string) string {
 	// take first segment name=value
 	part := strings.Split(setCookie, ";")[0]

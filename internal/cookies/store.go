@@ -523,6 +523,33 @@ func FileExistsNonEmpty(path string) bool {
 	return err == nil && !st.IsDir() && st.Size() > 0
 }
 
+// ClearStableFile removes one explicitly named stable jar under the same
+// process-wide writer lock used by atomic replacement. It is used when the
+// managed browser profile is deliberately disconnected, preventing the old
+// managed credentials from remaining active in search/download consumers.
+func ClearStableFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	cookieJarMu.Lock()
+	defer cookieJarMu.Unlock()
+	st, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if st.IsDir() {
+		return errors.New("cookies: stable path is a directory")
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // RefreshDropIns 扫描 dir，按修改时间只保留最新 cookie 到 stablePath。
 // 上传与启动共用 Deduplicate。
 func RefreshDropIns(dir, stablePath string) error {

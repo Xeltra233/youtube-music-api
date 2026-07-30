@@ -144,6 +144,28 @@ func TestCookieLifecycleStartupSkipsDisabledOrMissingSource(t *testing.T) {
 	}
 }
 
+func TestCookieLifecycleAutoModePausesExternalWhenManagedAuthenticated(t *testing.T) {
+	fake := &lifecycleBrowserFake{}
+	lifecycle := NewCookieLifecycle(fake, nil, nil)
+	arbiter := NewSourceArbiter(CookieSourceModeAuto, true)
+	arbiter.SetManagedAuthenticated(true)
+	opt := CookieLifecycleOptions{
+		BrowserSpec:        "chrome:Default",
+		BrowserSyncOnStart: true,
+		SourceArbiter:      arbiter,
+	}
+	lifecycle.RunStartup(context.Background(), opt)
+	if calls := fake.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("managed source should pause external startup, calls=%d", len(calls))
+	}
+
+	arbiter.SetManagedAuthenticated(false)
+	lifecycle.RunStartup(context.Background(), opt)
+	if calls := fake.snapshotCalls(); len(calls) != 1 {
+		t.Fatalf("external source should resume after managed logout, calls=%d", len(calls))
+	}
+}
+
 func TestCookieLifecycleStartupFailurePreservesExistingJarAndReturns(t *testing.T) {
 	dir := t.TempDir()
 	stable := filepath.Join(dir, StableFileName)

@@ -10,6 +10,8 @@ dist/
 /cookies/**
 !/cookies/.gitkeep
 !/cookies/README.md
+# 服务端专用 Chromium 档案包含登录态，只允许作为本地/持久卷运行数据。
+/browser-profile/
 # 只忽略仓库根目录下的构建产物，不要误伤 cmd/ytmusic-bridge/ 源码目录
 /ytmusic-bridge
 

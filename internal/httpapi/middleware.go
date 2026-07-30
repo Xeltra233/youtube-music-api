@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"log"
 	"net"
 	"net/http"
@@ -44,6 +45,19 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// Hijack preserves WebSocket upgrade support through the access-log wrapper.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, rw, err := h.Hijack()
+	if err == nil && w.status == 0 {
+		w.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
+
 // withMiddleware wraps recover + access log + optional API key checks.
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +66,11 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic: %v\n%s", rec, debug.Stack())
+				if strings.HasPrefix(r.URL.Path, "/api/admin/youtube-login/") {
+					log.Printf("panic: youtube login handler\n%s", debug.Stack())
+				} else {
+					log.Printf("panic: %v\n%s", rec, debug.Stack())
+				}
 				if sw.status == 0 {
 					writeError(sw, http.StatusInternalServerError, "INTERNAL_ERROR", "内部错误", nil)
 				}
@@ -61,7 +79,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
-			log.Printf("%s %s %d %dB %s", r.Method, r.URL.Path, status, sw.bytes, time.Since(start).Truncate(time.Millisecond))
+			log.Printf("%s %s %d %dB %s", r.Method, accessLogPath(r.URL.Path), status, sw.bytes, time.Since(start).Truncate(time.Millisecond))
 		}()
 
 		// optional API key
@@ -81,6 +99,22 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 func isAdminPath(path string) bool {
 	path = strings.TrimSpace(path)
 	return strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/api/admin")
+}
+
+func accessLogPath(path string) string {
+	const loginSessions = "/api/admin/youtube-login/sessions/"
+	if !strings.HasPrefix(path, loginSessions) {
+		return path
+	}
+	rest := strings.TrimPrefix(path, loginSessions)
+	if rest == "" {
+		return path
+	}
+	_, suffix, found := strings.Cut(rest, "/")
+	if !found {
+		return loginSessions + "{id}"
+	}
+	return loginSessions + "{id}/" + suffix
 }
 
 // clientIP extracts the remote host without the port.

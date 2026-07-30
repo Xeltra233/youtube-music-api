@@ -18,6 +18,7 @@ import (
 	"github.com/xeltra/ytmusic-bridge/internal/config"
 	"github.com/xeltra/ytmusic-bridge/internal/cookies"
 	"github.com/xeltra/ytmusic-bridge/internal/download"
+	"github.com/xeltra/ytmusic-bridge/internal/managedlogin"
 	"github.com/xeltra/ytmusic-bridge/internal/search"
 	"github.com/xeltra/ytmusic-bridge/internal/session"
 	"github.com/xeltra/ytmusic-bridge/internal/version"
@@ -57,6 +58,8 @@ type Server struct {
 	now          func() time.Time
 	admin        *adminauth.Manager
 	cookieStatus CookieSyncStatusProvider
+	cookieSource *cookies.SourceArbiter
+	managedLogin *managedlogin.Manager
 }
 
 // Options configures a Server.
@@ -71,6 +74,10 @@ type Options struct {
 	Admin *adminauth.Manager
 	// CookieSyncStatus optional; main passes the process CookieLifecycle.
 	CookieSyncStatus CookieSyncStatusProvider
+	// CookieSource serializes stable-jar operations and reports source arbitration.
+	CookieSource *cookies.SourceArbiter
+	// ManagedLogin controls the dedicated persistent Chromium profile.
+	ManagedLogin *managedlogin.Manager
 }
 
 // New builds an HTTP server. cfg/searcher/sessions/downloader are required.
@@ -110,6 +117,8 @@ func New(opts Options) (*Server, error) {
 		now:          now,
 		admin:        admin,
 		cookieStatus: opts.CookieSyncStatus,
+		cookieSource: opts.CookieSource,
+		managedLogin: opts.ManagedLogin,
 	}, nil
 }
 
@@ -126,6 +135,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/check-auth", s.handleAdminCheckAuth)
 	mux.HandleFunc("GET /api/admin/cookies/status", s.handleAdminCookieStatus)
 	mux.HandleFunc("POST /api/admin/cookies/upload", s.handleAdminCookieUpload)
+	mux.HandleFunc("POST /api/admin/youtube-login/sessions", s.handleYouTubeLoginCreate)
+	mux.HandleFunc("GET /api/admin/youtube-login/sessions/{id}", s.handleYouTubeLoginGet)
+	mux.HandleFunc("DELETE /api/admin/youtube-login/sessions/{id}", s.handleYouTubeLoginDelete)
+	mux.HandleFunc("POST /api/admin/youtube-login/sessions/{id}/verify", s.handleYouTubeLoginVerify)
+	mux.HandleFunc("GET /api/admin/youtube-login/sessions/{id}/channel", s.handleYouTubeLoginChannel)
+	mux.HandleFunc("POST /api/admin/youtube-login/disconnect", s.handleYouTubeLoginDisconnect)
 	s.mountAdminStatic(mux)
 	return s.withMiddleware(mux)
 }

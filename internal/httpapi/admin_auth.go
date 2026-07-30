@@ -36,7 +36,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeAdminErr(w, http.StatusServiceUnavailable, "admin disabled; set ADMIN_PASSWORD")
 		return
 	}
-	s.setAdminSessionCookie(w, token)
+	s.setAdminSessionCookie(w, r, token)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"expires_in": int(s.admin.TTL().Seconds()),
@@ -48,7 +48,7 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 		writeAdminErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	s.clearAdminSessionCookie(w)
+	s.clearAdminSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -86,7 +86,7 @@ func (s *Server) adminSessionToken(r *http.Request) string {
 	return strings.TrimSpace(c.Value)
 }
 
-func (s *Server) setAdminSessionCookie(w http.ResponseWriter, token string) {
+func (s *Server) setAdminSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	ttl := 12 * time.Hour
 	if s.admin != nil {
 		ttl = s.admin.TTL()
@@ -96,18 +96,20 @@ func (s *Server) setAdminSessionCookie(w http.ResponseWriter, token string) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestScheme(r) == "https",
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(ttl.Seconds()),
 		Expires:  s.now().Add(ttl),
 	})
 }
 
-func (s *Server) clearAdminSessionCookie(w http.ResponseWriter) {
+func (s *Server) clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminauth.CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestScheme(r) == "https",
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
@@ -121,4 +123,17 @@ func writeAdminErr(w http.ResponseWriter, status int, message string) {
 			"message": message,
 		},
 	})
+}
+
+func requestScheme(r *http.Request) string {
+	if r != nil && r.TLS != nil {
+		return "https"
+	}
+	if r != nil {
+		forwarded := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]))
+		if forwarded == "https" {
+			return "https"
+		}
+	}
+	return "http"
 }

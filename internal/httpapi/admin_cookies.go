@@ -95,6 +95,11 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 		writeAdminErr(w, http.StatusBadRequest, "不是有效的 Netscape cookies 文本")
 		return
 	}
+	releaseOperation := func() {}
+	if s.cookieSource != nil {
+		releaseOperation = s.cookieSource.LockOperation()
+	}
+	defer func() { releaseOperation() }()
 
 	dest := filepath.Join(s.cfg.CookiesDir, name)
 	// Ensure dest stays inside cookies dir.
@@ -115,12 +120,22 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-
-	// Promote into stable youtube.txt for runtime use.
-	if err := cookies.RefreshDropIns(s.cfg.CookiesDir, stable); err != nil {
-		writeAdminErr(w, http.StatusInternalServerError, "Cookie 文件提升失败")
+	if err := os.Chmod(dest, 0o600); err != nil {
+		writeAdminErr(w, http.StatusInternalServerError, "Cookie 文件权限设置失败")
 		return
 	}
+
+	// An authenticated managed profile owns the active stable jar. Keep this
+	// upload as a drop-in fallback and promote it after managed disconnect.
+	managedActive := s.cookieSource != nil && s.cookieSource.ManagedAuthenticated()
+	if !managedActive {
+		if err := cookies.RefreshDropIns(s.cfg.CookiesDir, stable); err != nil {
+			writeAdminErr(w, http.StatusInternalServerError, "Cookie 文件提升失败")
+			return
+		}
+	}
+	releaseOperation()
+	releaseOperation = func() {}
 
 	payload := s.cookieStatusPayload()
 	payload["ok"] = true
@@ -130,8 +145,15 @@ func (s *Server) handleAdminCookieUpload(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) cookieStatusPayload() map[string]any {
+	releaseOperation := func() {}
+	if s.cookieSource != nil {
+		releaseOperation = s.cookieSource.LockOperation()
+	}
+	defer releaseOperation()
+
 	dir, file := s.activeCookiePath()
-	if dir != "" {
+	managedActive := s.cookieSource != nil && s.cookieSource.ManagedAuthenticated()
+	if dir != "" && !managedActive {
 		stable := filepath.Join(dir, cookies.StableFileName)
 		if err := cookies.RefreshDropIns(dir, stable); err == nil && cookies.FileExistsNonEmpty(stable) {
 			file = stable
@@ -167,6 +189,22 @@ func (s *Server) cookieStatusPayload() map[string]any {
 	} else if fileStatus.Present {
 		source = cookies.CookieSourceFile
 	}
+	sourceMode := cookies.CookieSourceModeAuto
+	managedEnabled := false
+	managedAuthenticated := false
+	externalConfigured := syncStatus.BrowserConfigured
+	if s.cookieSource != nil {
+		source = s.cookieSource.SelectedSource(fileStatus.Present)
+		sourceMode = s.cookieSource.Mode()
+		managedEnabled = s.cookieSource.ManagedInteractiveEnabled()
+		managedAuthenticated = s.cookieSource.ManagedAuthenticated()
+		externalConfigured = s.cookieSource.ExternalConfigured()
+	} else if s.cfg != nil {
+		if strings.TrimSpace(s.cfg.CookieSourceMode) != "" {
+			sourceMode = s.cfg.CookieSourceMode
+		}
+		managedEnabled = s.cfg.ManagedCookieSourceEnabled()
+	}
 	modUnix, modRFC3339 := statusTime(fileStatus.ModifiedAt)
 	lastSyncUnix, lastSyncRFC3339 := statusTime(syncStatus.LastSyncAt)
 	lastSuccessUnix, lastSuccessRFC3339 := statusTime(syncStatus.LastSuccessAt)
@@ -186,32 +224,36 @@ func (s *Server) cookieStatusPayload() map[string]any {
 		}
 	}
 	return map[string]any{
-		"ok":                   true,
-		"active_file":          safeBaseName(file),
-		"present":              fileStatus.Present,
-		"size_bytes":           fileStatus.SizeBytes,
-		"modified_unix":        modUnix,
-		"modified_at":          modRFC3339,
-		"keepalive":            keepalive,
-		"keepalive_interval":   intervalSec,
-		"dropin_files":         dropins,
-		"source":               source,
-		"browser_configured":   syncStatus.BrowserConfigured,
-		"valid":                fileStatus.Quality.Valid,
-		"logged_in":            fileStatus.Quality.LoggedIn,
-		"quality_score":        fileStatus.Quality.Score,
-		"cookie_count":         fileStatus.Quality.CookieCount,
-		"youtube_google_count": fileStatus.Quality.YouTubeGoogleCookies,
-		"auth_cookie_count":    fileStatus.Quality.AuthCookies,
-		"sync_in_progress":     syncStatus.InProgress,
-		"last_sync_phase":      syncStatus.LastPhase,
-		"last_sync_result":     syncStatus.LastResult,
-		"last_sync_error":      syncStatus.LastError,
-		"last_sync_updated":    syncStatus.LastUpdated,
-		"last_sync_unix":       lastSyncUnix,
-		"last_sync_at":         lastSyncRFC3339,
-		"last_success_unix":    lastSuccessUnix,
-		"last_success_at":      lastSuccessRFC3339,
+		"ok":                    true,
+		"active_file":           safeBaseName(file),
+		"present":               fileStatus.Present,
+		"size_bytes":            fileStatus.SizeBytes,
+		"modified_unix":         modUnix,
+		"modified_at":           modRFC3339,
+		"keepalive":             keepalive,
+		"keepalive_interval":    intervalSec,
+		"dropin_files":          dropins,
+		"source":                source,
+		"source_mode":           sourceMode,
+		"managed_enabled":       managedEnabled,
+		"managed_authenticated": managedAuthenticated,
+		"external_configured":   externalConfigured,
+		"browser_configured":    syncStatus.BrowserConfigured,
+		"valid":                 fileStatus.Quality.Valid,
+		"logged_in":             fileStatus.Quality.LoggedIn,
+		"quality_score":         fileStatus.Quality.Score,
+		"cookie_count":          fileStatus.Quality.CookieCount,
+		"youtube_google_count":  fileStatus.Quality.YouTubeGoogleCookies,
+		"auth_cookie_count":     fileStatus.Quality.AuthCookies,
+		"sync_in_progress":      syncStatus.InProgress,
+		"last_sync_phase":       syncStatus.LastPhase,
+		"last_sync_result":      syncStatus.LastResult,
+		"last_sync_error":       syncStatus.LastError,
+		"last_sync_updated":     syncStatus.LastUpdated,
+		"last_sync_unix":        lastSyncUnix,
+		"last_sync_at":          lastSyncRFC3339,
+		"last_success_unix":     lastSuccessUnix,
+		"last_success_at":       lastSuccessRFC3339,
 		// Never return cookie contents.
 	}
 }

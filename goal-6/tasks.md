@@ -140,11 +140,21 @@
     - 系统 Edge `150.0.4078.105` 与 Docker CLI `29.5.3` 已确认；当前 Docker daemon 未运行，Dockerfile 静态审计确认尚缺 Chromium，所需浏览器/持久卷约束已在架构文档固定。
   - 剩余风险/下一步：本轮没有输入真实账号、密码或 2FA，因此只证明登录页面和交互/持久化基础成立；真实认证成功仍由 T10 硬验收。T8 下一轮按已定稿契约实现管理鉴权后的浏览器会话、CDP 通道、profile 持久化、Cookie 导出和来源仲裁，并补齐容器 Chromium 运行依赖及构建测试。
 
-- [ ] T8 实现服务端浏览器登录会话与持久化档案
+- [x] T8 实现服务端浏览器登录会话与持久化档案
   - 目标：管理鉴权后创建/终止隔离登录会话，使用专用持久化 profile，提供受保护交互通道并在登录后触发 Cookie 同步。
   - 验证：会话 TTL、并发、终止、重启档案复用、未鉴权访问、敏感输入不落日志均有测试。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 新增 `internal/managedlogin`：服务专用持久化 Chromium profile、自动浏览器探测、loopback 临时 CDP 端口、登录页导航、最新帧 screencast、鼠标/键盘/文本/resize、Cookie 导出、周期刷新、断开登录与进程清理；profile 根目录收敛为 `0700`，Preferences 原子写入 `0600`，并禁用密码保存、自动填充和浏览器同步。
+    - 登录会话实行单实例/单控制连接、默认 15 分钟空闲 TTL、活动延长和 30 分钟硬上限；会话绑定创建它的管理 session 指纹，浏览器启动失败、崩溃、终止、过期和服务退出均保留 profile 并完成清理。浏览器上下文取消会先经 CDP 优雅关闭，避免硬杀导致登录档案来不及落盘。
+    - 新增受管理鉴权保护的创建、查询、终止、校验、WebSocket 控制通道和断开登录 API；WebSocket 精确校验同源、关闭压缩、限制消息大小/类型/坐标/频率，二进制帧及敏感输入只在内存转发。访问日志隐藏完整登录 session ID，API/日志只返回固定错误枚举和质量元数据。
+    - CDP `Storage.getCookies` 只保留 YouTube/Google 域，写入唯一 `0600` 临时 Netscape 文件后复用质量保护和原子提交；匿名/弱候选保留已有强 jar。managed、external profile 和文件上传由来源仲裁器作为独立可选路线选择，`auto` 下已验证 managed 优先，managed 生效时暂停 external，上传文件保留为断开后的 drop-in 回退。
+    - 主程序接入 managed 启动探测、周期刷新、外部来源仲裁和 shutdown 等待；新增 `COOKIE_SOURCE_MODE` 及 managed 浏览器/profile/TTL/刷新配置。Dockerfile 安装 Chromium 与中日韩字体，使用非 root `app` 用户并预建可写 profile；浏览器档案和 cookies 同时加入 Git/Docker 构建上下文排除规则。
+  - 验证结果：
+    - `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...`、`go mod verify`、`go mod tidy -diff` 全部通过；managed/httpapi/cookies 定向测试连续 20 次通过。
+    - Windows 原生构建与 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...` 通过；`npx.cmd --yes dockerfilelint Dockerfile` 无问题，`gofmt -l .` 与 `git diff --check` 无输出。
+    - 本机真实 `YTM_LIVE_CDP=1` 探测通过：自动发现 Chromium 系浏览器、收到非空 screencast、完成输入与 Cookie 元数据调用、通过上下文取消优雅退出、虚构持久 Cookie 跨同一 profile 二次启动恢复；结束后无匹配浏览器进程、profile、Cookie 临时文件或 `DevToolsActivePort` 残留。
+    - Docker daemon 当前未运行，Linux 容器镜像的实际构建条件留待 daemon 可用时复验；本轮已完成 Dockerfile 静态检查、Linux 交叉构建和运行时依赖审计。
+  - 剩余风险/下一步：真实账号、密码、2FA/验证码及“登录后搜索/音频/MP4”链路留在 T10；下一轮只执行 T9，先读取前端视觉验证指南，再实现管理前端登录 UI、浏览器交互与截图读图验证。
 
 - [ ] T9 实现管理前端 YouTube 登录 UI
   - 目标：在管理前端加入开始登录、交互视图、状态、重试、终止/退出入口；登录成功后展示不含敏感值的 Cookie 状态。
