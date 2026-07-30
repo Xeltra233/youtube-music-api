@@ -444,6 +444,142 @@ func resolveFFmpegPath(configured string) (string, error) {
 	return "", fmt.Errorf("ffmpeg not found; set FFMPEG_LOCATION")
 }
 
+func resolveFFprobePath(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	candidates := []string{}
+	if configured != "" {
+		// configured may be ffmpeg.exe, a directory, or already ffprobe.
+		dir := configured
+		st, statErr := os.Stat(configured)
+		if statErr == nil && !st.IsDir() {
+			dir = filepath.Dir(configured)
+			if strings.HasPrefix(strings.ToLower(filepath.Base(configured)), "ffprobe") {
+				candidates = append(candidates, configured)
+			}
+		} else if statErr != nil && strings.HasPrefix(strings.ToLower(filepath.Base(configured)), "ffprobe") {
+			candidates = append(candidates, configured)
+		}
+		candidates = append(candidates,
+			filepath.Join(dir, "ffprobe"),
+			filepath.Join(dir, "ffprobe.exe"),
+		)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "bin", "ffprobe"),
+			filepath.Join(wd, "bin", "ffprobe.exe"),
+		)
+	}
+	candidates = append(candidates, "ffprobe", "ffprobe.exe")
+	for _, c := range candidates {
+		if c == "ffprobe" || c == "ffprobe.exe" {
+			if p, err := exec.LookPath(c); err == nil {
+				return p, nil
+			}
+			continue
+		}
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("ffprobe not found; place ffprobe next to ffmpeg")
+}
+
+// validateMediaFile ensures produced media matches the requested format.
+// For mp4 this rejects audio-only containers that slipped through as "video".
+func validateMediaFile(ctx context.Context, runner CommandRunner, ffmpegLocation, path, format string) error {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if path == "" {
+		return &InvalidMediaError{Reason: "empty media path"}
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return &InvalidMediaError{Reason: fmt.Sprintf("stat media: %v", err)}
+	}
+	if st.Size() <= 0 {
+		return &InvalidMediaError{Reason: "empty media file"}
+	}
+	if !IsVideoFormat(format) {
+		return nil
+	}
+	ffprobe, perr := resolveFFprobePath(ffmpegLocation)
+	if perr != nil {
+		return fmt.Errorf("%w: media validation requires ffprobe: %v", ErrExecFailed, perr)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if runner == nil {
+		runner = ExecRunner{}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	stdout, stderr, err := runner.Run(probeCtx, ffprobe, []string{
+		"-v", "error",
+		// Uppercase V excludes attached pictures/cover art.
+		"-select_streams", "V:0",
+		"-show_entries", "stream=codec_type,width,height",
+		"-of", "csv=p=0",
+		"--",
+		path,
+	}, nil)
+	if err != nil {
+		if probeCtx.Err() != nil {
+			return probeCtx.Err()
+		}
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(stdout)
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if msg == "" {
+				msg = "ffprobe rejected the file"
+			}
+			if probeFailureLooksOperational(msg) {
+				return fmt.Errorf("%w: ffprobe could not inspect media: %s", ErrExecFailed, msg)
+			}
+			return &InvalidMediaError{Reason: "ffprobe video check failed: " + msg}
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%w: ffprobe execution failed: %s", ErrExecFailed, msg)
+	}
+	out := strings.TrimSpace(stdout)
+	if !probeOutputHasVideo(out) {
+		return &InvalidMediaError{Reason: fmt.Sprintf("mp4 missing video stream (ffprobe=%q size=%d)", out, st.Size())}
+	}
+	return nil
+}
+
+func probeOutputHasVideo(out string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
+		for _, field := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "video") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func probeFailureLooksOperational(msg string) bool {
+	low := strings.ToLower(msg)
+	for _, marker := range []string{
+		"permission denied",
+		"access is denied",
+		"sharing violation",
+		"resource temporarily unavailable",
+		"device or resource busy",
+	} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isTransientYtdlpError 判断是否值得换 player client / 再试一次。
 func isTransientYtdlpError(err error) bool {
 	if err == nil {

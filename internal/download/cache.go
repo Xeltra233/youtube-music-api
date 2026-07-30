@@ -169,6 +169,27 @@ func (c *Cache) Put(e CacheEntry) error {
 	return c.saveLocked()
 }
 
+// Invalidate removes expected and its file only if it is still the current
+// cache entry. The identity check prevents a slow validator from deleting a
+// newer replacement written under the same video/format key.
+func (c *Cache) Invalidate(expected CacheEntry) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := cacheKey(expected.VideoID, expected.Format, expected.Bitrate)
+	current, ok := c.entries[key]
+	if !ok {
+		return false, nil
+	}
+	if expected.Token != "" && current.Token != expected.Token {
+		return false, nil
+	}
+	if expected.Path != "" && filepath.Clean(current.Path) != filepath.Clean(expected.Path) {
+		return false, nil
+	}
+	c.removeEntryLocked(key, current, true)
+	return true, c.saveLocked()
+}
+
 // GetByToken 按 token 取缓存。
 func (c *Cache) GetByToken(token string) (CacheEntry, error) {
 	if err := ValidateToken(token); err != nil {

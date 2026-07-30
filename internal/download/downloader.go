@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,12 +51,14 @@ type Downloader struct {
 	sem    *semaphore.Weighted
 	group  singleflight.Group
 	now    func() time.Time
+	probe  CommandRunner
 }
 
 // Options 可覆盖 runner（测试注入 fake）。
 type Options struct {
-	Runner CommandRunner
-	Now    func() time.Time
+	Runner      CommandRunner
+	ProbeRunner CommandRunner
+	Now         func() time.Time
 }
 
 // New 创建下载器。
@@ -74,6 +77,10 @@ func New(cfg *config.Config, opts Options) (*Downloader, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
+	probe := opts.ProbeRunner
+	if probe == nil {
+		probe = ExecRunner{}
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -86,6 +93,7 @@ func New(cfg *config.Config, opts Options) (*Downloader, error) {
 		cfg:    cfg,
 		cache:  cache,
 		runner: runner,
+		probe:  probe,
 		sem:    semaphore.NewWeighted(n),
 		now:    now,
 	}
@@ -119,7 +127,11 @@ func (d *Downloader) Download(ctx context.Context, req Request) (*Result, error)
 
 	// 缓存命中：不占信号量、不跑 yt-dlp。
 	if e, ok := d.cache.Get(videoID, format, bitrate); ok {
-		return d.resultFromEntry(e, true), nil
+		if err := d.validateCachedEntry(ctx, e, format); err == nil {
+			return d.resultFromEntry(e, true), nil
+		} else if !errors.Is(err, ErrInvalidMedia) {
+			return nil, err
+		}
 	}
 
 	key := cacheKey(videoID, format, bitrate)
@@ -130,7 +142,11 @@ func (d *Downloader) Download(ctx context.Context, req Request) (*Result, error)
 	v, err, _ := d.group.Do(key, func() (any, error) {
 		// double-check cache inside singleflight
 		if e, ok := d.cache.Get(videoID, format, bitrate); ok {
-			return d.resultFromEntry(e, true), nil
+			if err := d.validateCachedEntry(workCtx, e, format); err == nil {
+				return d.resultFromEntry(e, true), nil
+			} else if !errors.Is(err, ErrInvalidMedia) {
+				return nil, err
+			}
 		}
 		return d.downloadOnce(workCtx, req, videoID, format, bitrate)
 	})
@@ -152,7 +168,26 @@ func (d *Downloader) LookupToken(token string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := d.validateCachedEntry(context.Background(), e, e.Format); err != nil {
+		if errors.Is(err, ErrInvalidMedia) {
+			return nil, &NotFoundError{Reason: "cached media invalid"}
+		}
+		return nil, err
+	}
 	return d.resultFromEntry(e, true), nil
+}
+
+// validateCachedEntry drops invalid cached media (especially audio-only mp4).
+func (d *Downloader) validateCachedEntry(ctx context.Context, e CacheEntry, format string) error {
+	if d == nil || d.cfg == nil || d.cache == nil {
+		return fmt.Errorf("download: nil downloader")
+	}
+	err := validateMediaFile(ctx, d.probe, d.cfg.FFmpegLocation, e.Path, format)
+	if err == nil || !errors.Is(err, ErrInvalidMedia) {
+		return err
+	}
+	_, invalidateErr := d.cache.Invalidate(e)
+	return errors.Join(err, invalidateErr)
 }
 
 func (d *Downloader) downloadOnce(ctx context.Context, req Request, videoID, format, bitrate string) (*Result, error) {
@@ -172,7 +207,11 @@ func (d *Downloader) downloadOnce(ctx context.Context, req Request, videoID, for
 
 	// 再查一次缓存（等待信号量期间可能别人写好了）
 	if e, ok := d.cache.Get(videoID, format, bitrate); ok {
-		return d.resultFromEntry(e, true), nil
+		if err := d.validateCachedEntry(cctx, e, format); err == nil {
+			return d.resultFromEntry(e, true), nil
+		} else if !errors.Is(err, ErrInvalidMedia) {
+			return nil, err
+		}
 	}
 
 	finalName := videoID + "." + format
@@ -276,6 +315,10 @@ func (d *Downloader) downloadOnce(ctx context.Context, req Request, videoID, for
 			VideoID:  videoID,
 			Format:   format,
 		}
+	}
+	if err := validateMediaFile(cctx, d.probe, d.cfg.FFmpegLocation, produced, format); err != nil {
+		_ = os.Remove(produced)
+		return nil, err
 	}
 
 	// 原子落盘

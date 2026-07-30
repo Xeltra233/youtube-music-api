@@ -48,6 +48,70 @@ type fakeRunner struct {
 	onCall func(name string, args []string)
 }
 
+type probeResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+type fakeProbeRunner struct {
+	mu      sync.Mutex
+	calls   int
+	results []probeResult
+	names   []string
+	args    [][]string
+}
+
+func (f *fakeProbeRunner) Run(ctx context.Context, name string, args []string, env []string) (string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.names = append(f.names, name)
+	f.args = append(f.args, append([]string(nil), args...))
+	if len(f.results) == 0 {
+		return "video,1920,1080\n", "", nil
+	}
+	i := f.calls - 1
+	if i >= len(f.results) {
+		i = len(f.results) - 1
+	}
+	r := f.results[i]
+	return r.stdout, r.stderr, r.err
+}
+
+func (f *fakeProbeRunner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeProbeRunner) lastCall() (string, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.names) == 0 {
+		return "", nil
+	}
+	return f.names[len(f.names)-1], append([]string(nil), f.args[len(f.args)-1]...)
+}
+
+func configureFakeMediaTools(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	dir := filepath.Join(cfg.DownloadDir, "media-tools")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ffmpeg.exe", "ffprobe.exe"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.FFmpegLocation = dir
+	return filepath.Join(dir, "ffprobe.exe")
+}
+
 func (f *fakeRunner) Run(ctx context.Context, name string, args []string, env []string) (string, string, error) {
 	f.mu.Lock()
 	f.calls++
@@ -216,6 +280,7 @@ func TestBuildYtdlpArgsVideoVsAudio(t *testing.T) {
 
 func TestDownloadMP4Video(t *testing.T) {
 	cfg := testConfig(t)
+	expectedProbe := configureFakeMediaTools(t, cfg)
 	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
 	if err := os.WriteFile(fakeBin, []byte("fake"), 0o755); err != nil {
 		t.Fatal(err)
@@ -235,7 +300,8 @@ func TestDownloadMP4Video(t *testing.T) {
 			}
 		},
 	}
-	d, err := New(cfg, Options{Runner: fake})
+	probe := &fakeProbeRunner{}
+	d, err := New(cfg, Options{Runner: fake, ProbeRunner: probe})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +327,230 @@ func TestDownloadMP4Video(t *testing.T) {
 	}
 	if _, err := os.Stat(res.Path); err != nil {
 		t.Fatalf("missing file: %v", err)
+	}
+	probeName, probeArgs := probe.lastCall()
+	if filepath.Clean(probeName) != filepath.Clean(expectedProbe) {
+		t.Fatalf("probe path=%q want %q", probeName, expectedProbe)
+	}
+	joinedProbe := strings.Join(probeArgs, " ")
+	if !strings.Contains(joinedProbe, "-select_streams V:0") {
+		t.Fatalf("probe must reject attached pictures: %v", probeArgs)
+	}
+}
+
+func TestValidateMediaFileRejectsAudioOnlyMP4(t *testing.T) {
+	cfg := testConfig(t)
+	configureFakeMediaTools(t, cfg)
+	// Minimal non-empty file without a video stream.
+	p := filepath.Join(cfg.DownloadDir, "audio-only.mp4")
+	if err := os.WriteFile(p, []byte("not-a-real-mp4-but-small"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probe := &fakeProbeRunner{results: []probeResult{{stdout: ""}}}
+	err := validateMediaFile(context.Background(), probe, cfg.FFmpegLocation, p, "mp4")
+	if !errors.Is(err, ErrInvalidMedia) || !errors.Is(err, ErrExecFailed) {
+		t.Fatalf("audio-only mp4 should be invalid/upstream failure, got %v", err)
+	}
+	// Audio formats should not require a video stream.
+	before := probe.callCount()
+	if err := validateMediaFile(context.Background(), probe, cfg.FFmpegLocation, p, "mp3"); err != nil {
+		t.Fatalf("audio format should pass size-only check: %v", err)
+	}
+	if probe.callCount() != before {
+		t.Fatal("audio validation must not invoke ffprobe")
+	}
+
+	probe = &fakeProbeRunner{results: []probeResult{{stdout: "video,1280,720\n"}}}
+	if err := validateMediaFile(context.Background(), probe, cfg.FFmpegLocation, p, "mp4"); err != nil {
+		t.Fatalf("video stream should pass: %v", err)
+	}
+}
+
+func TestValidateMediaFileClassifiesProbeFailures(t *testing.T) {
+	cfg := testConfig(t)
+	configureFakeMediaTools(t, cfg)
+	p := filepath.Join(cfg.DownloadDir, "candidate.mp4")
+	if err := os.WriteFile(p, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	launchFailure := &fakeProbeRunner{results: []probeResult{{err: errors.New("launch failed")}}}
+	err := validateMediaFile(context.Background(), launchFailure, cfg.FFmpegLocation, p, "mp4")
+	if !errors.Is(err, ErrExecFailed) || errors.Is(err, ErrInvalidMedia) {
+		t.Fatalf("probe launch failure should not invalidate cache: %v", err)
+	}
+	lockedFile := &fakeProbeRunner{results: []probeResult{{stderr: "Access is denied", err: &exec.ExitError{}}}}
+	err = validateMediaFile(context.Background(), lockedFile, cfg.FFmpegLocation, p, "mp4")
+	if !errors.Is(err, ErrExecFailed) || errors.Is(err, ErrInvalidMedia) {
+		t.Fatalf("temporary probe access failure should preserve cache: %v", err)
+	}
+
+	badFile := &fakeProbeRunner{results: []probeResult{{stderr: "moov atom not found", err: &exec.ExitError{}}}}
+	err = validateMediaFile(context.Background(), badFile, cfg.FFmpegLocation, p, "mp4")
+	if !errors.Is(err, ErrInvalidMedia) {
+		t.Fatalf("ffprobe rejected file should invalidate it: %v", err)
+	}
+}
+
+func TestResolveFFprobePathUsesSiblingOfConfiguredFFmpeg(t *testing.T) {
+	dir := t.TempDir()
+	ffmpeg := filepath.Join(dir, "custom-ffmpeg.exe")
+	ffprobe := filepath.Join(dir, "ffprobe.exe")
+	for _, path := range []string{ffmpeg, ffprobe} {
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := resolveFFprobePath(ffmpeg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(got) != filepath.Clean(ffprobe) {
+		t.Fatalf("resolved %q want sibling %q", got, ffprobe)
+	}
+}
+
+func TestCacheInvalidateRemovesExpectedEntry(t *testing.T) {
+	dir := t.TempDir()
+	c, err := newCache(dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "x.mp4")
+	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(CacheEntry{VideoID: "abc1234", Format: "mp4", Bitrate: "0", Path: path, Size: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Get("abc1234", "mp4", "0"); !ok {
+		t.Fatal("expected cache hit before delete")
+	}
+	e, ok := c.Get("abc1234", "mp4", "0")
+	if !ok {
+		t.Fatal("expected cache entry")
+	}
+	removed, err := c.Invalidate(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("expected entry to be invalidated")
+	}
+	if _, ok := c.Get("abc1234", "mp4", "0"); ok {
+		t.Fatal("expected miss after delete")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected file removed, stat err=%v", err)
+	}
+}
+
+func TestCacheInvalidateDoesNotDeleteNewerReplacement(t *testing.T) {
+	dir := t.TempDir()
+	c, err := newCache(dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(dir, "old.mp4")
+	newPath := filepath.Join(dir, "new.mp4")
+	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(CacheEntry{VideoID: "abc1234", Format: "mp4", Bitrate: "0", Path: oldPath, Size: 3}); err != nil {
+		t.Fatal(err)
+	}
+	old, ok := c.Get("abc1234", "mp4", "0")
+	if !ok {
+		t.Fatal("missing old entry")
+	}
+	const newToken = "0123456789abcdef0123456789abcdef"
+	if err := c.Put(CacheEntry{VideoID: "abc1234", Format: "mp4", Bitrate: "0", Path: newPath, Size: 3, Token: newToken}); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := c.Invalidate(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("stale validator removed newer cache entry")
+	}
+	current, ok := c.Get("abc1234", "mp4", "0")
+	if !ok || current.Token != newToken || filepath.Clean(current.Path) != filepath.Clean(newPath) {
+		t.Fatalf("new entry was not preserved: %+v ok=%v", current, ok)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new file removed: %v", err)
+	}
+}
+
+func TestDownloadInvalidCachedMP4Redownloads(t *testing.T) {
+	cfg := testConfig(t)
+	configureFakeMediaTools(t, cfg)
+	fakeBin := filepath.Join(cfg.DownloadDir, "fake-ytdlp.exe")
+	if err := os.WriteFile(fakeBin, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.YtdlpPath = fakeBin
+	fake := &fakeRunner{writeSize: 4096}
+	probe := &fakeProbeRunner{results: []probeResult{
+		{stdout: ""},
+		{stdout: "video,1920,1080\n"},
+	}}
+	d, err := New(cfg, Options{Runner: fake, ProbeRunner: probe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const videoID = "SX_ViT4Ra7k"
+	oldPath := filepath.Join(cfg.DownloadDir, videoID+".mp4")
+	if err := os.WriteFile(oldPath, []byte("audio-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.cache.Put(CacheEntry{VideoID: videoID, Format: "mp4", Bitrate: "0", Path: oldPath, Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := d.Download(context.Background(), Request{VideoID: videoID, Format: "mp4"})
+	if err != nil {
+		t.Fatalf("redownload after invalid cache: %v", err)
+	}
+	if res.Cached {
+		t.Fatal("invalid cache must be replaced by a fresh download")
+	}
+	if fake.callCount() != 1 || probe.callCount() != 2 {
+		t.Fatalf("calls ytdlp=%d probe=%d", fake.callCount(), probe.callCount())
+	}
+	if st, err := os.Stat(res.Path); err != nil || st.Size() != 4096 {
+		t.Fatalf("replacement file stat=%v err=%v", st, err)
+	}
+}
+
+func TestLookupTokenInvalidMP4ReturnsNotFound(t *testing.T) {
+	cfg := testConfig(t)
+	configureFakeMediaTools(t, cfg)
+	d, err := New(cfg, Options{Runner: &fakeRunner{}, ProbeRunner: &fakeProbeRunner{results: []probeResult{{stdout: ""}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.DownloadDir, "cached.mp4")
+	if err := os.WriteFile(path, []byte("audio-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.cache.Put(CacheEntry{VideoID: "SX_ViT4Ra7k", Format: "mp4", Bitrate: "0", Path: path, Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := d.cache.Get("SX_ViT4Ra7k", "mp4", "0")
+	if !ok {
+		t.Fatal("missing cached entry")
+	}
+	_, err = d.LookupToken(e.Token)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid cached token should be not found, got %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid cached file should be removed, stat err=%v", err)
 	}
 }
 

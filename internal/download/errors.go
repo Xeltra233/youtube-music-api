@@ -18,6 +18,8 @@ var (
 	ErrYtdlpMissing = errors.New("download: yt-dlp missing")
 	// ErrExecFailed yt-dlp 进程失败。
 	ErrExecFailed = errors.New("download: exec failed")
+	// ErrInvalidMedia 表示产物存在，但不符合请求的媒体类型。
+	ErrInvalidMedia = errors.New("download: invalid media")
 )
 
 // BadRequestError 携带可读原因。
@@ -114,4 +116,21 @@ func (e *ExecError) Error() string {
 
 func (e *ExecError) Is(target error) bool {
 	return target == ErrExecFailed
+}
+
+// InvalidMediaError 表示 yt-dlp 产物损坏，或视频请求实际没有视频流。
+// 它同时归类为 ErrExecFailed，HTTP 层会把新下载产物错误映射为上游失败。
+type InvalidMediaError struct {
+	Reason string
+}
+
+func (e *InvalidMediaError) Error() string {
+	if e == nil || strings.TrimSpace(e.Reason) == "" {
+		return ErrInvalidMedia.Error()
+	}
+	return "download: invalid media: " + strings.TrimSpace(e.Reason)
+}
+
+func (e *InvalidMediaError) Is(target error) bool {
+	return target == ErrInvalidMedia || target == ErrExecFailed
 }
