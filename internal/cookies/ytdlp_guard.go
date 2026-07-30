@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SnapshotForYtdlp copies src to a temp Netscape file for yt-dlp.
@@ -14,18 +15,23 @@ import (
 func SnapshotForYtdlp(src string) (tmp string, cleanup func(), err error) {
 	src = strings.TrimSpace(src)
 	noop := func() {}
-	if src == "" || !FileExistsNonEmpty(src) {
+	if src == "" {
 		return "", noop, nil
 	}
 	src = filepath.Clean(src)
+	cookieJarMu.RLock()
+	defer cookieJarMu.RUnlock()
+	if !FileExistsNonEmpty(src) {
+		return "", noop, nil
+	}
 	dir := filepath.Dir(src)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", noop, fmt.Errorf("cookies: mkdir for snapshot: %w", err)
 	}
-	f, err := os.CreateTemp(dir, ".ytdlp-cookies-*.txt")
+	f, err := os.CreateTemp(dir, ".ytdlp-cookies-*.tmp")
 	if err != nil {
 		// Fallback to process temp dir if cookies dir is not writable.
-		f, err = os.CreateTemp("", "ytdlp-cookies-*.txt")
+		f, err = os.CreateTemp("", "ytdlp-cookies-*.tmp")
 		if err != nil {
 			return "", noop, fmt.Errorf("cookies: create snapshot: %w", err)
 		}
@@ -49,43 +55,69 @@ func SnapshotForYtdlp(src string) (tmp string, cleanup func(), err error) {
 	return tmp, cleanup, nil
 }
 
+// SnapshotCommitResult reports a non-sensitive quality comparison and whether
+// the candidate was installed. Current is the resulting stable jar quality.
+type SnapshotCommitResult struct {
+	Updated   bool
+	Candidate CookieQuality
+	Previous  CookieQuality
+	Current   CookieQuality
+}
+
 // CommitSnapshotIfBetter copies tmp onto stable only when it does not
 // degrade an existing login jar to anonymous cookies.
 func CommitSnapshotIfBetter(tmp, stable string) error {
+	_, err := CommitSnapshotIfBetterDetailed(tmp, stable)
+	return err
+}
+
+// CommitSnapshotIfBetterDetailed is the result-returning form used by browser
+// profile synchronization. The old function remains for existing callers.
+func CommitSnapshotIfBetterDetailed(tmp, stable string) (SnapshotCommitResult, error) {
+	var result SnapshotCommitResult
 	tmp = strings.TrimSpace(tmp)
 	stable = strings.TrimSpace(stable)
 	if tmp == "" || stable == "" {
-		return nil
+		return result, nil
 	}
 	if !FileExistsNonEmpty(tmp) {
-		return nil
+		return result, nil
 	}
-	tmpOK, tmpScore := scoreCookieFile(tmp)
-	if !tmpOK {
-		return nil
+	cookieJarMu.Lock()
+	defer cookieJarMu.Unlock()
+
+	now := time.Now()
+	candidate, err := inspectCookieFile(tmp, now)
+	if err != nil || !candidate.Valid {
+		return result, nil
 	}
+	result.Candidate = candidate
+	allow := true
 	if FileExistsNonEmpty(stable) {
-		stableOK, stableScore := scoreCookieFile(stable)
-		if stableOK {
-			// Never replace a stronger login jar with a weaker anonymous one.
-			if tmpScore < stableScore {
-				return nil
-			}
-			// Same quality: only refresh if tmp still looks logged-in enough,
-			// or stable was already anonymous.
-			if tmpScore == stableScore && !looksLoggedIn(tmp) && looksLoggedIn(stable) {
-				return nil
+		previous, inspectErr := inspectCookieFile(stable, now)
+		if inspectErr != nil {
+			return result, fmt.Errorf("cookies: inspect stable snapshot: %w", inspectErr)
+		}
+		result.Previous = previous
+		result.Current = previous
+		if previous.Valid {
+			switch {
+			case previous.LoggedIn && !candidate.LoggedIn:
+				allow = false
+			case !previous.LoggedIn && candidate.LoggedIn:
+				allow = true
+			case candidate.Score < previous.Score:
+				allow = false
 			}
 		}
 	}
-	if err := copyFile(tmp, stable); err != nil {
-		return fmt.Errorf("cookies: commit snapshot: %w", err)
+	if !allow {
+		return result, nil
 	}
-	return nil
-}
-
-func looksLoggedIn(path string) bool {
-	ok, score := scoreCookieFile(path)
-	// LOGIN_INFO / SID family alone scores +5 each; visitor-only jars stay low.
-	return ok && score >= 10
+	if err := copyFile(tmp, stable); err != nil {
+		return result, fmt.Errorf("cookies: commit snapshot: %w", err)
+	}
+	result.Updated = true
+	result.Current = candidate
+	return result, nil
 }

@@ -4,16 +4,24 @@ package cookies
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // StableFileName 是目录内统一使用的稳定文件名，便于保活回写。
 const StableFileName = "youtube.txt"
+
+// cookieJarMu coordinates stable jar readers with all in-process replacements.
+// Atomic rename already prevents partial files on POSIX; this lock also covers
+// the Windows replace/rollback sequence, where the destination is briefly moved.
+var cookieJarMu sync.RWMutex
 
 // ResolveOptions 控制如何从目录/显式路径得到可用 cookie 文件。
 type ResolveOptions struct {
@@ -115,6 +123,16 @@ type cookieCandidate struct {
 	size  int64
 }
 
+// CookieQuality contains only non-sensitive metadata about one Netscape jar.
+type CookieQuality struct {
+	Valid                bool
+	Score                int
+	LoggedIn             bool
+	CookieCount          int
+	YouTubeGoogleCookies int
+	AuthCookies          int
+}
+
 func listCookieCandidates(dir string) ([]cookieCandidate, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -166,6 +184,7 @@ func sortCandidatesByTime(list []cookieCandidate) {
 // Deduplicate 按修改时间只保留最新 cookie：
 //  1. 把最新有效文件内容提升到 stablePath（通常 youtube.txt）
 //  2. 删除目录内其它更早的 drop-in cookie 文件
+//
 // 上传与重启（Resolve）共用此逻辑。
 func Deduplicate(dir, stablePath string) error {
 	dir = strings.TrimSpace(dir)
@@ -173,6 +192,12 @@ func Deduplicate(dir, stablePath string) error {
 	if dir == "" || stablePath == "" {
 		return nil
 	}
+	cookieJarMu.Lock()
+	defer cookieJarMu.Unlock()
+	return deduplicateLocked(dir, stablePath)
+}
+
+func deduplicateLocked(dir, stablePath string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("cookies: mkdir %s: %w", dir, err)
 	}
@@ -242,17 +267,83 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	return writeFileAtomic(dst, data, 0o600)
+}
+
+// writeFileAtomic writes a complete replacement in the destination directory.
+// POSIX rename replaces atomically. Windows may reject replacement, so move the
+// old file aside first and roll it back if installing the new file fails.
+func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
+	dst = filepath.Clean(dst)
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		// Windows 上目标存在时 rename 可能失败：直接写
-		if werr := os.WriteFile(dst, data, 0o600); werr != nil {
-			return werr
-		}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return err
 	}
+	tmp := f.Name()
+	keepTmp := true
+	defer func() {
+		if keepTmp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err == nil {
+		keepTmp = false
+		return nil
+	}
+
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		return fmt.Errorf("cookies: replace destination: %w", err)
+	}
+	if dstInfo.IsDir() {
+		return errors.New("cookies: replace destination is a directory")
+	}
+	backupFile, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".bak-*")
+	if err != nil {
+		return err
+	}
+	backup := backupFile.Name()
+	if err := backupFile.Close(); err != nil {
+		_ = os.Remove(backup)
+		return err
+	}
+	_ = os.Remove(backup)
+	if err := os.Rename(dst, backup); err != nil {
+		return fmt.Errorf("cookies: move old destination aside: %w", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		rollbackErr := os.Rename(backup, dst)
+		return errors.Join(
+			fmt.Errorf("cookies: install replacement: %w", err),
+			func() error {
+				if rollbackErr == nil {
+					return nil
+				}
+				return fmt.Errorf("cookies: restore previous destination: %w", rollbackErr)
+			}(),
+		)
+	}
+	keepTmp = false
+	_ = os.Remove(backup)
 	return nil
 }
 
@@ -263,15 +354,24 @@ func IsLikelyNetscape(path string) (bool, error) {
 }
 
 func scoreCookieFile(path string) (bool, int) {
-	f, err := os.Open(path)
+	quality, err := inspectCookieFile(path, time.Now())
 	if err != nil {
 		return false, 0
 	}
+	return quality.Valid, quality.Score
+}
+
+func inspectCookieFile(path string, now time.Time) (CookieQuality, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return CookieQuality{}, err
+	}
 	defer f.Close()
 
-	score := 0
-	lines := 0
-	ytLines := 0
+	quality := CookieQuality{}
+	hasLoginInfo := false
+	hasSIDFamily := false
+	hasAPISIDFamily := false
 	scanner := bufio.NewScanner(f)
 	// 大 cookie 行
 	buf := make([]byte, 0, 64*1024)
@@ -281,36 +381,85 @@ func scoreCookieFile(path string) (bool, int) {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "#") {
+		if strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "#HttpOnly_") {
 			if strings.Contains(line, "Netscape") || strings.Contains(line, "HTTP Cookie File") {
-				score += 2
+				quality.Score += 2
 			}
 			continue
 		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 7 {
+		domain, name, _, ok := parseActiveCookieLine(line, now)
+		if !ok {
 			continue
 		}
-		lines++
-		domain := strings.ToLower(parts[0])
-		name := parts[5]
-		if strings.Contains(domain, "youtube.com") || strings.Contains(domain, "google.com") {
-			ytLines++
-			score++
+		quality.CookieCount++
+		isYTGoogle := isYouTubeGoogleDomain(domain)
+		if isYTGoogle {
+			quality.YouTubeGoogleCookies++
+			quality.Score++
+		}
+		if !isYTGoogle {
+			continue
 		}
 		switch name {
-		case "LOGIN_INFO", "SID", "__Secure-3PSID", "__Secure-1PSID", "SAPISID", "APISID", "__Secure-3PAPISID", "__Secure-1PAPISID":
-			score += 5
+		case "LOGIN_INFO":
+			hasLoginInfo = true
+			quality.AuthCookies++
+			quality.Score += 8
+		case "SID", "__Secure-3PSID", "__Secure-1PSID":
+			hasSIDFamily = true
+			quality.AuthCookies++
+			quality.Score += 5
+		case "SAPISID", "APISID", "__Secure-3PAPISID", "__Secure-1PAPISID":
+			hasAPISIDFamily = true
+			quality.AuthCookies++
+			quality.Score += 5
 		}
 	}
-	if lines == 0 {
-		return false, 0
+	if err := scanner.Err(); err != nil {
+		return CookieQuality{}, err
 	}
-	if ytLines == 0 && score < 3 {
-		// 可能是别的站 cookie，仍算 netscape，但分低
-		return true, score
+	quality.Valid = quality.CookieCount > 0
+	quality.Score += quality.YouTubeGoogleCookies
+	quality.LoggedIn = hasLoginInfo || (hasSIDFamily && hasAPISIDFamily)
+	return quality, nil
+}
+
+func parseActiveCookieLine(line string, now time.Time) (domain, name, value string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || (strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "#HttpOnly_")) {
+		return "", "", "", false
 	}
-	return true, score + ytLines
+	parts := strings.SplitN(line, "\t", 7)
+	if len(parts) < 7 {
+		return "", "", "", false
+	}
+	if !isNetscapeBool(parts[1]) || !strings.HasPrefix(strings.TrimSpace(parts[2]), "/") || !isNetscapeBool(parts[3]) {
+		return "", "", "", false
+	}
+	expires, err := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
+	if err != nil || (expires > 0 && expires <= now.Unix()) {
+		return "", "", "", false
+	}
+	domain = strings.ToLower(strings.TrimSpace(parts[0]))
+	domain = strings.TrimPrefix(domain, "#httponly_")
+	name = strings.TrimSpace(parts[5])
+	value = parts[6]
+	if domain == "" || name == "" || value == "" {
+		return "", "", "", false
+	}
+	return domain, name, value, true
+}
+
+func isNetscapeBool(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "true") ||
+		strings.EqualFold(strings.TrimSpace(value), "false")
+}
+
+func isYouTubeGoogleDomain(domain string) bool {
+	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	return domain == "youtube.com" || strings.HasSuffix(domain, ".youtube.com") ||
+		domain == "google.com" || strings.HasSuffix(domain, ".google.com") ||
+		domain == "google.cn" || strings.HasSuffix(domain, ".google.cn")
 }
 
 // HeaderFromFile 把 Netscape 文件转成 Cookie 请求头（供搜索 InnerTube 使用）。
@@ -320,6 +469,8 @@ func HeaderFromFile(path string) (string, error) {
 	if path == "" {
 		return "SOCS=CAI", nil
 	}
+	cookieJarMu.RLock()
+	defer cookieJarMu.RUnlock()
 	if st, err := os.Stat(path); err != nil || st.IsDir() || st.Size() == 0 {
 		return "SOCS=CAI", nil
 	}
@@ -332,27 +483,17 @@ func HeaderFromFile(path string) (string, error) {
 	// name -> value，后写覆盖先写
 	values := map[string]string{}
 	order := []string{}
+	now := time.Now()
 	scanner := bufio.NewScanner(f)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		domain, name, val, ok := parseActiveCookieLine(line, now)
+		if !ok {
 			continue
 		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 7 {
-			continue
-		}
-		domain := strings.ToLower(parts[0])
-		name := parts[5]
-		val := parts[6]
-		if name == "" || val == "" {
-			continue
-		}
-		if !(strings.Contains(domain, "youtube.com") ||
-			strings.Contains(domain, "google.com") ||
-			strings.Contains(domain, "google.cn")) {
+		if !isYouTubeGoogleDomain(domain) {
 			continue
 		}
 		if _, ok := values[name]; !ok {
