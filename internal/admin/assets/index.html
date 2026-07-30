@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cookie 上传 · ytmusic-bridge</title>
+  <title>YouTube 登录 · ytmusic-bridge</title>
   <link rel="stylesheet" href="admin.css">
 </head>
 <body class="app-body">
@@ -11,35 +11,139 @@
     <div class="topbar-brand">
       <span class="brand-mark sm" aria-hidden="true">Y</span>
       <div>
-        <div class="topbar-title">Cookie 上传</div>
-        <div class="topbar-sub">ytmusic-bridge 管理</div>
+        <div class="topbar-title">认证管理</div>
+        <div class="topbar-sub">YouTube 登录与 Cookie</div>
       </div>
     </div>
-    <button type="button" class="btn ghost" id="logoutBtn">退出</button>
+    <button type="button" class="btn ghost" id="logoutBtn">退出管理端</button>
   </header>
 
   <main class="app-main">
-    <section class="panel">
-      <h2>当前状态</h2>
-      <div class="status-grid" id="statusGrid">
-        <div class="stat"><span class="stat-k">状态</span><span class="stat-v" id="stPresent">加载中…</span></div>
-        <div class="stat"><span class="stat-k">文件</span><span class="stat-v mono" id="stFile">-</span></div>
-        <div class="stat"><span class="stat-k">大小</span><span class="stat-v" id="stSize">-</span></div>
-        <div class="stat"><span class="stat-k">更新时间</span><span class="stat-v" id="stMod">-</span></div>
-        <div class="stat"><span class="stat-k">保活</span><span class="stat-v" id="stKeep">-</span></div>
-        <div class="stat"><span class="stat-k">目录文件数</span><span class="stat-v" id="stCount">-</span></div>
+    <section class="panel login-panel" id="loginPanel" aria-labelledby="youtube-login-title">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">推荐路线</div>
+          <h1 id="youtube-login-title">YouTube 浏览器登录</h1>
+          <p class="panel-copy">在服务专用的持久化浏览器中完成 Google 登录。登录档案会持续复用，搜索和下载仍只读取稳定 Cookie 文件。</p>
+        </div>
+        <span class="status-pill neutral" id="managedStatePill">正在读取状态</span>
       </div>
-      <p class="hint">不会在页面上显示 cookie 内容。云容器请挂载 <code>/app/cookies</code> 文件夹。</p>
+
+      <div class="auth-overview" aria-label="浏览器登录摘要">
+        <div class="summary-item">
+          <span class="summary-k">当前来源</span>
+          <strong class="summary-v" id="managedSource">-</strong>
+        </div>
+        <div class="summary-item">
+          <span class="summary-k">浏览器档案</span>
+          <strong class="summary-v" id="managedProfile">-</strong>
+        </div>
+        <div class="summary-item">
+          <span class="summary-k">登录 Cookie</span>
+          <strong class="summary-v" id="managedCookies">-</strong>
+        </div>
+        <div class="summary-item">
+          <span class="summary-k">质量分</span>
+          <strong class="summary-v" id="managedQuality">-</strong>
+        </div>
+      </div>
+
+      <p class="route-note" id="loginRouteNote">正在确认可用的认证来源…</p>
+
+      <div class="login-actions">
+        <button type="button" class="btn primary action-primary" id="loginStartBtn" disabled>开始登录</button>
+        <button type="button" class="btn ghost" id="managedDisconnectBtn" hidden>断开已保存登录</button>
+      </div>
+
+      <div class="confirm-bar" id="disconnectConfirm" hidden role="group" aria-label="确认断开 YouTube 登录">
+        <span>这会清除服务浏览器中的 YouTube 登录，并切换到其余可用来源。</span>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost compact" id="disconnectCancelBtn">取消</button>
+          <button type="button" class="btn danger compact" id="disconnectConfirmBtn">确认断开</button>
+        </div>
+      </div>
+
+      <p class="err login-message" id="loginErr" role="alert"></p>
+      <p class="ok login-message" id="loginOk" role="status"></p>
+
+      <section class="login-workspace" id="loginWorkspace" hidden aria-label="YouTube 远程登录窗口">
+        <div class="remote-toolbar">
+          <div class="remote-status">
+            <span class="session-dot" id="loginSessionDot" aria-hidden="true"></span>
+            <div>
+              <strong id="loginSessionState">正在启动浏览器</strong>
+              <span id="loginSessionExpiry">会话准备中</span>
+            </div>
+          </div>
+          <div class="remote-actions">
+            <button type="button" class="btn ghost compact" id="loginReconnectBtn" hidden>重连画面</button>
+            <button type="button" class="btn compact" id="loginVerifyBtn" disabled>校验登录</button>
+            <button type="button" class="btn danger compact" id="loginTerminateBtn">结束会话</button>
+          </div>
+        </div>
+
+        <div class="login-surface" id="loginSurface" tabindex="0" role="application" aria-label="远程 Google 登录页面，点击后可使用鼠标和键盘操作">
+          <img id="loginFrame" alt="" draggable="false" hidden>
+          <div class="surface-overlay" id="loginOverlay">
+            <span class="spinner" id="loginSpinner" aria-hidden="true"></span>
+            <strong id="loginOverlayTitle">正在启动服务浏览器</strong>
+            <span id="loginOverlayText">首次启动通常需要几秒钟</span>
+          </div>
+          <span class="surface-focus-note" id="surfaceFocusNote">点击画面后可直接使用键盘</span>
+        </div>
+
+        <div class="text-relay">
+          <div>
+            <strong>粘贴或发送敏感文字</strong>
+            <p>先在远程画面中点选输入框，再从这里发送；内容发送后会立即清空。</p>
+          </div>
+          <form class="relay-form" id="loginTextForm" autocomplete="off">
+            <label class="visually-hidden" for="loginTextInput">发送到远程登录页的文字</label>
+            <input id="loginTextInput" type="password" autocomplete="off" spellcheck="false" placeholder="密码、验证码或粘贴文字" disabled>
+            <button type="button" class="btn ghost compact" id="loginTextToggle" aria-label="显示或隐藏待发送文字" disabled>显示</button>
+            <button type="submit" class="btn compact" id="loginTextSendBtn" disabled>发送</button>
+          </form>
+        </div>
+
+        <p class="privacy-note">画面与输入只通过当前管理会话实时转发。完成 Google 登录后，请点击“校验登录”。</p>
+      </section>
     </section>
 
-    <section class="panel">
-      <h2>上传 Netscape cookies.txt</h2>
-      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择或拖拽 cookie 文件">
+    <section class="panel" aria-labelledby="cookie-status-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="cookie-status-title">Cookie 消费状态</h2>
+          <p>搜索和下载共同使用的稳定文件，只展示元数据。</p>
+        </div>
+        <button type="button" class="btn ghost compact" id="refreshStatusBtn">刷新</button>
+      </div>
+      <div class="status-grid" id="statusGrid">
+        <div class="stat"><span class="stat-k">状态</span><span class="stat-v" id="stPresent">加载中…</span></div>
+        <div class="stat"><span class="stat-k">来源</span><span class="stat-v" id="stSource">-</span></div>
+        <div class="stat"><span class="stat-k">登录态</span><span class="stat-v" id="stLogin">-</span></div>
+        <div class="stat"><span class="stat-k">Cookie 数</span><span class="stat-v" id="stCookieCount">-</span></div>
+        <div class="stat"><span class="stat-k">质量分</span><span class="stat-v" id="stQuality">-</span></div>
+        <div class="stat"><span class="stat-k">文件</span><span class="stat-v mono" id="stFile">-</span></div>
+        <div class="stat"><span class="stat-k">更新时间</span><span class="stat-v" id="stMod">-</span></div>
+        <div class="stat"><span class="stat-k">保活</span><span class="stat-v" id="stKeep">-</span></div>
+        <div class="stat"><span class="stat-k">备用文件</span><span class="stat-v" id="stCount">-</span></div>
+      </div>
+      <p class="hint">页面不会显示 Cookie 正文。服务浏览器档案与外部浏览器档案是两条独立路线，文件上传始终保留。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cookie-upload-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="cookie-upload-title">上传 Netscape cookies.txt</h2>
+          <p>浏览器路线之外的文件来源，也可作为后续切换使用。</p>
+        </div>
+      </div>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择或拖拽 Cookie 文件">
         <p class="drop-title">拖拽 .txt 到此处，或点击选择</p>
         <p class="drop-sub">文件名随意；服务会自动整理为 youtube.txt</p>
         <input id="fileInput" type="file" accept=".txt,.cookies,text/plain" hidden>
       </div>
-      <div class="row">
+      <div class="row upload-row">
         <div class="file-name mono" id="fileName">未选择文件</div>
         <button type="button" class="btn primary" id="uploadBtn" disabled>上传</button>
       </div>

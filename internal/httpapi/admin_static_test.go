@@ -40,19 +40,22 @@ func TestAdminStaticPagesServed(t *testing.T) {
 		t.Fatalf("admin/ redirect location=%q", loc)
 	}
 
-	// upload page still available at index.html
+	// Browser login and file upload share the authenticated management page.
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/admin/index.html", nil)
 	h.ServeHTTP(rr, req)
-	if rr.Code != 200 || (!strings.Contains(rr.Body.String(), "Cookie 上传") && !strings.Contains(rr.Body.String(), "dropzone")) {
-		t.Fatalf("upload page missing markers status=%d", rr.Code)
+	indexBody := rr.Body.String()
+	for _, marker := range []string{"YouTube 浏览器登录", `id="loginSurface"`, `id="loginVerifyBtn"`, `id="dropzone"`} {
+		if rr.Code != 200 || !strings.Contains(indexBody, marker) {
+			t.Fatalf("management page missing marker %q status=%d", marker, rr.Code)
+		}
 	}
 
 	// css
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/admin/admin.css", nil)
 	h.ServeHTTP(rr, req)
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "login-body") {
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "login-body") || !strings.Contains(rr.Body.String(), "login-surface") {
 		t.Fatalf("css status=%d", rr.Code)
 	}
 
@@ -60,8 +63,17 @@ func TestAdminStaticPagesServed(t *testing.T) {
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/admin/admin.js", nil)
 	h.ServeHTTP(rr, req)
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "cookies/upload") {
+	jsBody := rr.Body.String()
+	if rr.Code != 200 || !strings.Contains(jsBody, "cookies/upload") ||
+		!strings.Contains(jsBody, "youtube-login/sessions") || !strings.Contains(jsBody, "new WebSocket") ||
+		!strings.Contains(jsBody, "browser_start_failed") || !strings.Contains(jsBody, "is-terminal") {
 		t.Fatalf("js status=%d", rr.Code)
+	}
+	if strings.Contains(jsBody, "T10 将继续") {
+		t.Fatal("admin UI must use product copy rather than internal task labels")
+	}
+	if strings.Contains(jsBody, "console.log") || strings.Contains(jsBody, "console.debug") {
+		t.Fatal("admin login script must not log browser input or frame data")
 	}
 }
 
