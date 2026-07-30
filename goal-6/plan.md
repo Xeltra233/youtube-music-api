@@ -52,7 +52,7 @@
 - Windows DPAPI 档案被复制到 Linux 容器后不可解密；
 - 直接把浏览器数据库暴露给多个并发 yt-dlp 进程。
 
-### 3.2 配置契约（拟定）
+### 3.2 配置契约（T2 已落定）
 
 ```text
 # 原样传给 yt-dlp；示例：chrome:Default
@@ -66,11 +66,13 @@ COOKIES_BROWSER_SYNC_ON_START=true
 约束：
 
 - `COOKIES_FROM_BROWSER` 作为单个 argv 参数传递，不经 shell 拼接。
+- 浏览器/keyring 前缀按项目内 yt-dlp 支持列表校验并规范为小写；profile/container 原样保留。
+- 同步间隔正数下限为 60 秒；设为 `0` 时只关闭周期同步，启动同步仍由 `COOKIES_BROWSER_SYNC_ON_START` 决定。
 - 未配置时行为与当前版本一致。
 - 浏览器档案与服务需处于可解密的同 OS/用户上下文；容器场景应挂载同环境生成的持久化档案。
 - `COOKIES_KEEPALIVE` 继续作为稳定 jar 的刷新/回退机制，不取代浏览器档案同步。
 
-最终变量名可在 T2 基于代码一致性微调，但必须同步 `.env.example` 和 README。
+变量名已在 T2 固化；T7 必须同步 `.env.example` 和 README。
 
 ### 3.3 同步流程
 

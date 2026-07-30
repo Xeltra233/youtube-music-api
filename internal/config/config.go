@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MinimumMaxLimit 是 MaxLimit 的下限：用户要求「最大 20，你起码要支持返回那么多」。
@@ -36,19 +37,24 @@ type Config struct {
 	MinScore     float64
 
 	// 下载
-	DownloadDir            string
-	AudioFormat            string
-	AudioBitrate           string
-	FFmpegLocation         string
-	YtdlpPath              string
-	Proxy                  string
-	CookiesFile            string
-	CookiesDir             string
-	CookiesKeepAlive       bool
-	CookiesKeepAliveEvery  time.Duration
-	MaxConcurrentDownloads int
-	MaxFilesizeMB          int
-	DownloadTimeout        time.Duration
+	DownloadDir    string
+	AudioFormat    string
+	AudioBitrate   string
+	FFmpegLocation string
+	YtdlpPath      string
+	Proxy          string
+	CookiesFile    string
+	CookiesDir     string
+	// CookiesFromBrowser is one complete yt-dlp browser spec:
+	// BROWSER[+KEYRING][:PROFILE][::CONTAINER]. It is passed as one argv value.
+	CookiesFromBrowser        string
+	CookiesBrowserSyncOnStart bool
+	CookiesBrowserSyncEvery   time.Duration // 0 disables periodic sync
+	CookiesKeepAlive          bool
+	CookiesKeepAliveEvery     time.Duration
+	MaxConcurrentDownloads    int
+	MaxFilesizeMB             int
+	DownloadTimeout           time.Duration
 
 	// 生命周期
 	SessionTTL      time.Duration
@@ -60,6 +66,27 @@ type Config struct {
 
 var validAudioFormats = map[string]bool{"mp3": true, "m4a": true, "opus": true}
 
+var validCookieBrowsers = map[string]bool{
+	"brave": true, "chrome": true, "chromium": true, "edge": true,
+	"firefox": true, "opera": true, "safari": true, "vivaldi": true, "whale": true,
+}
+
+var validCookieKeyrings = map[string]bool{
+	"basictext": true, "gnomekeyring": true, "kwallet": true,
+	"kwallet5": true, "kwallet6": true,
+}
+
+var chromiumCookieBrowsers = map[string]bool{
+	"brave": true, "chrome": true, "chromium": true, "edge": true,
+	"opera": true, "vivaldi": true, "whale": true,
+}
+
+const (
+	defaultCookiesBrowserSyncEvery = 6 * time.Hour
+	minimumCookiesBrowserSyncEvery = time.Minute
+	maxCookiesFromBrowserSpecBytes = 4096
+)
+
 // Load 读取 .env（若存在）与环境变量，返回校验后的配置。
 // 环境变量优先级高于 .env 文件。数值项写错时直接报错（fail fast），不静默回落默认值。
 func Load(envFile string) (*Config, error) {
@@ -70,23 +97,29 @@ func Load(envFile string) (*Config, error) {
 	l := &loader{file: fileVals}
 
 	cfg := &Config{
-		Host:                   l.str("HOST", "127.0.0.1"),
-		Port:                   l.port(8787),
-		APIKey:                 l.str("API_KEY", ""),
-		AdminPassword:          l.str("ADMIN_PASSWORD", ""),
-		AdminSessionSecret:     l.str("ADMIN_SESSION_SECRET", ""),
-		AdminSessionTTL:        l.seconds("ADMIN_SESSION_TTL_SECONDS", 12*time.Hour),
-		DefaultLimit:           l.int("DEFAULT_LIMIT", 10),
-		MaxLimit:               l.int("MAX_LIMIT", MinimumMaxLimit),
-		MinScore:               l.float("MIN_SCORE", 0.0),
-		DownloadDir:            l.str("DOWNLOAD_DIR", "downloads"),
-		AudioFormat:            strings.ToLower(l.str("AUDIO_FORMAT", "mp3")),
-		AudioBitrate:           l.str("AUDIO_BITRATE", "192"),
-		FFmpegLocation:         l.str("FFMPEG_LOCATION", ""),
-		YtdlpPath:              l.str("YTDLP_PATH", ""),
-		Proxy:                  l.str("PROXY", ""),
-		CookiesFile:            l.str("COOKIES_FILE", ""),
-		CookiesDir:             l.str("COOKIES_DIR", "cookies"),
+		Host:                      l.str("HOST", "127.0.0.1"),
+		Port:                      l.port(8787),
+		APIKey:                    l.str("API_KEY", ""),
+		AdminPassword:             l.str("ADMIN_PASSWORD", ""),
+		AdminSessionSecret:        l.str("ADMIN_SESSION_SECRET", ""),
+		AdminSessionTTL:           l.seconds("ADMIN_SESSION_TTL_SECONDS", 12*time.Hour),
+		DefaultLimit:              l.int("DEFAULT_LIMIT", 10),
+		MaxLimit:                  l.int("MAX_LIMIT", MinimumMaxLimit),
+		MinScore:                  l.float("MIN_SCORE", 0.0),
+		DownloadDir:               l.str("DOWNLOAD_DIR", "downloads"),
+		AudioFormat:               strings.ToLower(l.str("AUDIO_FORMAT", "mp3")),
+		AudioBitrate:              l.str("AUDIO_BITRATE", "192"),
+		FFmpegLocation:            l.str("FFMPEG_LOCATION", ""),
+		YtdlpPath:                 l.str("YTDLP_PATH", ""),
+		Proxy:                     l.str("PROXY", ""),
+		CookiesFile:               l.str("COOKIES_FILE", ""),
+		CookiesDir:                l.str("COOKIES_DIR", "cookies"),
+		CookiesFromBrowser:        l.str("COOKIES_FROM_BROWSER", ""),
+		CookiesBrowserSyncOnStart: l.bool("COOKIES_BROWSER_SYNC_ON_START", true),
+		CookiesBrowserSyncEvery: l.seconds(
+			"COOKIES_BROWSER_SYNC_INTERVAL_SECONDS",
+			defaultCookiesBrowserSyncEvery,
+		),
 		CookiesKeepAlive:       l.bool("COOKIES_KEEPALIVE", false),
 		CookiesKeepAliveEvery:  l.seconds("COOKIES_KEEPALIVE_INTERVAL_SECONDS", 6*time.Hour),
 		MaxConcurrentDownloads: l.int("MAX_CONCURRENT_DOWNLOADS", 2),
@@ -171,8 +204,16 @@ func (c *Config) normalize() error {
 
 	c.CookiesFile = strings.TrimSpace(c.CookiesFile)
 	c.CookiesDir = strings.TrimSpace(c.CookiesDir)
+	browserSpec, err := normalizeCookiesFromBrowserSpec(c.CookiesFromBrowser)
+	if err != nil {
+		return fmt.Errorf("COOKIES_FROM_BROWSER 非法: %w", err)
+	}
+	c.CookiesFromBrowser = browserSpec
 	if c.CookiesDir == "" {
 		c.CookiesDir = "cookies"
+	}
+	if c.CookiesBrowserSyncEvery > 0 && c.CookiesBrowserSyncEvery < minimumCookiesBrowserSyncEvery {
+		c.CookiesBrowserSyncEvery = minimumCookiesBrowserSyncEvery
 	}
 	if c.CookiesKeepAliveEvery < time.Minute {
 		c.CookiesKeepAliveEvery = time.Minute
@@ -202,6 +243,21 @@ func (c *Config) normalize() error {
 // AdminEnabled 表示管理上传端是否可用。
 func (c *Config) AdminEnabled() bool {
 	return c != nil && strings.TrimSpace(c.AdminPassword) != ""
+}
+
+// HasBrowserCookieSource reports whether a browser profile source is configured.
+func (c *Config) HasBrowserCookieSource() bool {
+	return c != nil && strings.TrimSpace(c.CookiesFromBrowser) != ""
+}
+
+// BrowserCookieStartupSyncEnabled reports whether startup should run one sync.
+func (c *Config) BrowserCookieStartupSyncEnabled() bool {
+	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncOnStart
+}
+
+// BrowserCookiePeriodicSyncEnabled reports whether the periodic loop is enabled.
+func (c *Config) BrowserCookiePeriodicSyncEnabled() bool {
+	return c.HasBrowserCookieSource() && c.CookiesBrowserSyncEvery > 0
 }
 
 // Addr 返回 http.Server 监听地址。
@@ -248,6 +304,53 @@ func (c *Config) ResolveMinScore(requested float64) float64 {
 		return 1
 	}
 	return requested
+}
+
+// normalizeCookiesFromBrowserSpec validates the yt-dlp grammar prefix while
+// preserving PROFILE/CONTAINER verbatim (including spaces and Windows paths).
+// The returned string remains one argument; callers must not split it.
+func normalizeCookiesFromBrowserSpec(raw string) (string, error) {
+	spec := strings.TrimSpace(raw)
+	if spec == "" {
+		return "", nil
+	}
+	if len(spec) > maxCookiesFromBrowserSpecBytes {
+		return "", fmt.Errorf("长度超过 %d 字节", maxCookiesFromBrowserSpecBytes)
+	}
+	for _, r := range spec {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("包含控制字符")
+		}
+	}
+
+	head, tail, hasTail := strings.Cut(spec, ":")
+	if head == "" || strings.TrimSpace(head) != head || strings.ContainsAny(head, " ") {
+		return "", fmt.Errorf("浏览器前缀为空或包含空白")
+	}
+	browser, keyring, hasKeyring := strings.Cut(head, "+")
+	if strings.Contains(keyring, "+") {
+		return "", fmt.Errorf("只能指定一个 keyring")
+	}
+	browser = strings.ToLower(browser)
+	if !validCookieBrowsers[browser] {
+		return "", fmt.Errorf("不支持的浏览器 %q", browser)
+	}
+
+	normalizedHead := browser
+	if hasKeyring {
+		keyring = strings.ToLower(keyring)
+		if !validCookieKeyrings[keyring] {
+			return "", fmt.Errorf("不支持的 keyring %q", keyring)
+		}
+		if !chromiumCookieBrowsers[browser] {
+			return "", fmt.Errorf("浏览器 %q 不使用 Chromium keyring", browser)
+		}
+		normalizedHead += "+" + keyring
+	}
+	if hasTail {
+		return normalizedHead + ":" + tail, nil
+	}
+	return normalizedHead, nil
 }
 
 func parseEnvFile(path string) (map[string]string, error) {

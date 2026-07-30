@@ -16,11 +16,21 @@
     - 实际 `bin/ffprobe.exe`：现有 1080p MP4 返回 `video,1920,1080`；临时生成的 audio-only MP4 对 `V:0` 返回空，临时文件已清理。
   - 剩余风险/下一步：视频下载现在严格依赖 ffprobe；Docker 的 ffmpeg 包和项目本地 `bin/ffprobe` 已满足。下一轮执行 T2，定义浏览器 Cookie 来源配置契约。
 
-- [ ] T2 定义浏览器 Cookie 来源配置契约
+- [x] T2 定义浏览器 Cookie 来源配置契约
   - 目标：加入浏览器 spec、启动同步和周期配置；默认保持旧行为；参数不经 shell。
   - 验证：config 单测覆盖环境变量、默认值、下限与非法输入。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 固化 `COOKIES_FROM_BROWSER`、`COOKIES_BROWSER_SYNC_ON_START`、`COOKIES_BROWSER_SYNC_INTERVAL_SECONDS` 三项配置及对应 `Config` 字段。
+    - browser/keyring 前缀按 yt-dlp `2026.07.04` 支持列表校验并规范为小写；Windows 路径、带空格 profile 和 Firefox container 保持为一个完整字符串，不做 shell/字段拆分。
+    - Chromium keyring 只允许用于 Chromium 系浏览器；控制字符、未知浏览器/keyring、多 keyring 和超长 spec 均 fail fast。
+    - 默认未配置来源，旧 Cookie 文件策略不受影响；配置来源后默认启动同步、每 6 小时周期同步。
+    - 正数周期下限为 1 分钟，`0` 明确定义为关闭周期同步；增加来源、启动调度、周期调度辅助方法供 T4 使用。
+    - `goal-6/plan.md` 已同步最终变量名和 `0` 的语义；`.env.example` / README 留在 T7 集中更新。
+  - 验证结果：
+    - `go test ./internal/config -count=20` 通过。
+    - `go test -race ./internal/config` 通过。
+    - `go test ./...`、`go vet ./...`、`gofmt -l internal/config`、`git diff --check` 通过。
+  - 剩余风险/下一步：本轮只落定配置契约，尚未调用 yt-dlp；下一轮 T3 实现浏览器档案到稳定 Netscape jar 的同步器，并用 fake runner 证明 spec 始终作为单个 argv 传递。
 
 - [ ] T3 实现浏览器档案到稳定 Netscape jar 的同步器
   - 目标：临时文件、yt-dlp 抽取、质量校验、强 jar 保护、原子提交、超时与清理。

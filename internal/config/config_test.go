@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +41,125 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AdminSessionTTL != 12*time.Hour {
 		t.Errorf("AdminSessionTTL 默认应为 12h，实际 %v", cfg.AdminSessionTTL)
 	}
+	if cfg.CookiesFromBrowser != "" || cfg.HasBrowserCookieSource() {
+		t.Errorf("默认不应启用浏览器 Cookie，同步源=%q", cfg.CookiesFromBrowser)
+	}
+	if !cfg.CookiesBrowserSyncOnStart {
+		t.Error("浏览器 Cookie 启动同步默认应开启（仅配置来源后生效）")
+	}
+	if cfg.CookiesBrowserSyncEvery != 6*time.Hour {
+		t.Errorf("浏览器 Cookie 周期默认应为 6h，实际 %v", cfg.CookiesBrowserSyncEvery)
+	}
+	if cfg.BrowserCookieStartupSyncEnabled() || cfg.BrowserCookiePeriodicSyncEnabled() {
+		t.Error("没有浏览器来源时不应调度同步")
+	}
+}
+
+func TestBrowserCookieConfigFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("COOKIES_FROM_BROWSER", `CHROME+GNOMEKEYRING:C:\Users\Example User\Profile 1`)
+	t.Setenv("COOKIES_BROWSER_SYNC_ON_START", "false")
+	t.Setenv("COOKIES_BROWSER_SYNC_INTERVAL_SECONDS", "900")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	want := `chrome+gnomekeyring:C:\Users\Example User\Profile 1`
+	if cfg.CookiesFromBrowser != want {
+		t.Fatalf("CookiesFromBrowser=%q want %q", cfg.CookiesFromBrowser, want)
+	}
+	if !cfg.HasBrowserCookieSource() {
+		t.Fatal("配置浏览器 spec 后应启用同步源")
+	}
+	if cfg.CookiesBrowserSyncOnStart {
+		t.Fatal("COOKIES_BROWSER_SYNC_ON_START=false 未生效")
+	}
+	if cfg.CookiesBrowserSyncEvery != 15*time.Minute {
+		t.Fatalf("CookiesBrowserSyncEvery=%v", cfg.CookiesBrowserSyncEvery)
+	}
+	if cfg.BrowserCookieStartupSyncEnabled() {
+		t.Fatal("显式关闭后不应调度启动同步")
+	}
+	if !cfg.BrowserCookiePeriodicSyncEnabled() {
+		t.Fatal("正数周期应启用周期同步")
+	}
+}
+
+func TestNormalizeCookiesFromBrowserSpecVariants(t *testing.T) {
+	cases := map[string]string{
+		"chrome":             "chrome",
+		"CHROMIUM:Profile 1": "chromium:Profile 1",
+		`CHROME+KWALLET6:C:\Profiles\YouTube Account`: `chrome+kwallet6:C:\Profiles\YouTube Account`,
+		"firefox:default-release::none":               "firefox:default-release::none",
+		"safari":                                      "safari",
+	}
+	for raw, want := range cases {
+		t.Run(raw, func(t *testing.T) {
+			got, err := normalizeCookiesFromBrowserSpec(raw)
+			if err != nil {
+				t.Fatalf("normalize 失败: %v", err)
+			}
+			if got != want {
+				t.Fatalf("got %q want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestInvalidCookiesFromBrowserSpecs(t *testing.T) {
+	cases := []string{
+		"ie",
+		"chrome+dpapi",
+		"chrome+basictext+kwallet",
+		"firefox+kwallet",
+		":Default",
+		"chrome :Default",
+		"chrome\t:Default",
+		"chrome:Default\u0007",
+		"chrome:Default\n--proxy=http://example.invalid",
+		"+kwallet",
+		strings.Repeat("a", maxCookiesFromBrowserSpecBytes+1),
+	}
+	for _, raw := range cases {
+		t.Run(strings.ReplaceAll(raw, "\n", `\n`), func(t *testing.T) {
+			if _, err := normalizeCookiesFromBrowserSpec(raw); err == nil {
+				t.Fatalf("非法 spec %q 应报错", raw)
+			}
+		})
+	}
+}
+
+func TestBrowserCookieSyncIntervalFloorAndDisable(t *testing.T) {
+	t.Run("positive_value_has_one_minute_floor", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIES_FROM_BROWSER", "chrome")
+		t.Setenv("COOKIES_BROWSER_SYNC_INTERVAL_SECONDS", "1")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load 失败: %v", err)
+		}
+		if cfg.CookiesBrowserSyncEvery != time.Minute {
+			t.Fatalf("同步周期下限应为 1m，实际 %v", cfg.CookiesBrowserSyncEvery)
+		}
+	})
+	t.Run("zero_disables_periodic_sync", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIES_FROM_BROWSER", "firefox:default-release")
+		t.Setenv("COOKIES_BROWSER_SYNC_INTERVAL_SECONDS", "0")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load 失败: %v", err)
+		}
+		if cfg.CookiesBrowserSyncEvery != 0 {
+			t.Fatalf("0 应关闭周期同步，实际 %v", cfg.CookiesBrowserSyncEvery)
+		}
+		if cfg.BrowserCookiePeriodicSyncEnabled() {
+			t.Fatal("周期为 0 时不应调度周期同步")
+		}
+		if !cfg.BrowserCookieStartupSyncEnabled() {
+			t.Fatal("周期为 0 不应关闭默认启动同步")
+		}
+	})
 }
 
 // R5：配置不得把上限压到 20 以下，服务端起码要能返回 20 条。
@@ -155,17 +275,39 @@ func TestInvalidValues(t *testing.T) {
 			t.Error("越界 MIN_SCORE 应报错")
 		}
 	})
+	t.Run("browser_spec", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIES_FROM_BROWSER", "netscape:Default")
+		if _, err := Load(""); err == nil {
+			t.Error("不支持的 COOKIES_FROM_BROWSER 应报错")
+		}
+	})
+	t.Run("browser_sync_bool", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIES_BROWSER_SYNC_ON_START", "sometimes")
+		if _, err := Load(""); err == nil {
+			t.Error("非法 COOKIES_BROWSER_SYNC_ON_START 应报错")
+		}
+	})
+	t.Run("browser_sync_negative_interval", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("COOKIES_BROWSER_SYNC_INTERVAL_SECONDS", "-1")
+		if _, err := Load(""); err == nil {
+			t.Error("负数 COOKIES_BROWSER_SYNC_INTERVAL_SECONDS 应报错")
+		}
+	})
 }
 
 // 数值项写错必须 fail fast，不能静默回落默认值（否则用户改了配置却毫无感知）。
 func TestNonNumericValuesFailFast(t *testing.T) {
 	cases := map[string]string{
-		"PORT":                "abc",
-		"DEFAULT_LIMIT":       "十",
-		"MAX_LIMIT":           "20x",
-		"MIN_SCORE":           "high",
-		"SESSION_TTL_SECONDS": "5m",
-		"CACHE_TTL_SECONDS":   "-1",
+		"PORT":                                  "abc",
+		"DEFAULT_LIMIT":                         "十",
+		"MAX_LIMIT":                             "20x",
+		"MIN_SCORE":                             "high",
+		"SESSION_TTL_SECONDS":                   "5m",
+		"CACHE_TTL_SECONDS":                     "-1",
+		"COOKIES_BROWSER_SYNC_INTERVAL_SECONDS": "5m",
 	}
 	for key, bad := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -368,6 +510,7 @@ func clearEnv(t *testing.T) {
 		"DEFAULT_LIMIT", "MAX_LIMIT", "MIN_SCORE",
 		"DOWNLOAD_DIR", "AUDIO_FORMAT", "AUDIO_BITRATE", "FFMPEG_LOCATION", "YTDLP_PATH",
 		"PROXY", "COOKIES_FILE", "COOKIES_DIR", "COOKIES_KEEPALIVE", "COOKIES_KEEPALIVE_INTERVAL_SECONDS",
+		"COOKIES_FROM_BROWSER", "COOKIES_BROWSER_SYNC_ON_START", "COOKIES_BROWSER_SYNC_INTERVAL_SECONDS",
 		"MAX_CONCURRENT_DOWNLOADS", "MAX_FILESIZE_MB",
 		"DOWNLOAD_TIMEOUT_SECONDS", "SESSION_TTL_SECONDS", "CACHE_TTL_SECONDS",
 		"CACHE_MAX_TOTAL_MB", "CLEANUP_INTERVAL_SECONDS", "SEARCH_TIMEOUT_SECONDS",
