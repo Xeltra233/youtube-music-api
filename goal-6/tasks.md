@@ -186,11 +186,21 @@
   - 安全/清理：管理鉴权、单控制连接、同源 WebSocket、输入限流/内存转发和日志脱敏由 T8 测试覆盖；T9 脚本不使用 console 输出输入或帧。真实画面保持匿名，验证结束后专用浏览器进程、profile、测试 Cookie 和 DevTools/SQLite 残留计数均为 0。
   - 全量质量门：`go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...`、`go build ./...`、`node --check`、`gofmt -l .`、`git diff --check` 全部通过；T7–T9 保持独立提交边界，managed 路线仍可通过来源模式配置回滚到 external/file。
 
-- [ ] T10 前端登录到搜索/下载的端到端验证
+- [x] T10 前端登录到搜索/下载的端到端验证
   - 目标：证明管理前端登录后，稳定 jar 被搜索、音频下载和 MP4 下载共同使用；退出/失效后状态准确且文件上传回退仍可用。
   - 验证：真实或隔离账号流程 + 自动化回归，仅记录元数据；清理临时导出。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
+  - 完成记录：
+    - 新增 `TestManagedFrontendLoginCookiePipelineEndToEnd` 隔离账号端到端回归，通过真实管理登录 HTTP、登录会话 API 和前端同款 WebSocket 控制协议驱动 `managedlogin.Manager`；浏览器夹具先发送非空远程画面，只有依次接收虚构账号、密码和 OTP 输入后才导出登录 Cookie，随后由正式质量判定与原子提交路径写入稳定 jar。
+    - WebSocket 返回 `synced` 前验证登录态、更新结果和认证 Cookie 计数；随后直接检查稳定 jar 已是本次前端登录生成的版本，再用同一持久化 profile 路径执行无 screencast 后台刷新，证明前端会话提交并不依赖后续刷新补写。
+    - 通过正式 `/search`、`/download?mode=json` 和 `/file/{token}` HTTP 链路验证搜索、MP3 与 MP4 共同消费同一稳定来源：InnerTube 夹具实际捕获搜索 Cookie header，下载 runner 实际读取每次隔离快照，MP4 继续经过视频流探针；稳定 jar 未被消费者改写，快照均在请求后清理。
+    - managed 来源有效时上传新的 Netscape jar 不会覆盖当前强登录 jar；调用前端“断开已保存登录”后，浏览器 Cookie 清理一次、已上传文件被提升，管理状态切换为 `file` 且仍为已登录，现有搜索/下载对象无需重建即可共同消费新一代 Cookie。
+    - 断开后再创建匿名 managed 会话并校验，API 返回固定 `not_logged_in` 状态，`managed_authenticated=false`，已生效的文件回退及其稳定 jar 字节保持不变；由此覆盖退出和失效两条状态路径。
+    - 所有 API/WebSocket 响应与 managed 日志均检查不含虚构账号输入、管理口令或两代 Cookie 值；测试使用 `t.TempDir`，并检查 managed/browser/yt-dlp 临时 Cookie、原子替换备份和上传临时文件均无残留。
+  - 验证结果：
+    - 端到端测试连续运行 20 次通过；`go test -count=1 ./...` 与 `go test -race -count=1 ./...` 通过。
+    - `go vet ./...`、`go build ./...`、`go mod verify`、`go mod tidy -diff`、`node --check internal/admin/assets/admin.js` 全部通过；`gofmt -l .` 与 `git diff --check` 无输出。
+    - 仓库文件名审计未发现被跟踪的浏览器数据库、Cookie 数据库、`DevToolsActivePort` 或临时导出；工作区没有本轮 managed pipeline 残留，既有运行时 `cookies/youtube.txt` 继续受 `.gitignore` 保护且本轮未读取正文。
+  - 剩余风险/下一步：本轮采用可重复的隔离账号浏览器夹具，没有输入外部真实账号、密码、2FA 或验证码；T7 已独立证明真实 Google 登录页和 CDP 交互通道可用，上游账号风控及页面变化仍属于运行环境变量。下一轮只执行 T11，同步部署与运维文档。
 
 - [ ] T11 更新部署与运维文档
   - 目标：更新 `.env.example`、README；覆盖前端登录、浏览器/profile 挂载、Windows/Linux 容器、同 OS/用户解密限制和文件回退。
