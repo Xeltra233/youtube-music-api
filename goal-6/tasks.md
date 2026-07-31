@@ -202,23 +202,46 @@
     - 仓库文件名审计未发现被跟踪的浏览器数据库、Cookie 数据库、`DevToolsActivePort` 或临时导出；工作区没有本轮 managed pipeline 残留，既有运行时 `cookies/youtube.txt` 继续受 `.gitignore` 保护且本轮未读取正文。
   - 剩余风险/下一步：本轮采用可重复的隔离账号浏览器夹具，没有输入外部真实账号、密码、2FA 或验证码；T7 已独立证明真实 Google 登录页和 CDP 交互通道可用，上游账号风控及页面变化仍属于运行环境变量。下一轮只执行 T11，同步部署与运维文档。
 
-- [ ] T11 更新部署与运维文档
+- [x] T11 更新部署与运维文档
   - 目标：更新 `.env.example`、README；覆盖前端登录、浏览器/profile 挂载、Windows/Linux 容器、同 OS/用户解密限制和文件回退。
   - 验证：文档变量、路径、前端操作和实际实现一致。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
-
-- [ ] T12 最终 review、live 抽样、敏感数据审计与提交收尾
+  - 完成记录：
+    - 更新 `.env.example`：补充 `COOKIE_SOURCE_MODE`、`COOKIES_FROM_BROWSER`、浏览器同步间隔、`YOUTUBE_LOGIN_*` 全套变量注释，并明确三条来源是独立可选路线。
+    - 更新 `README.md`：配置表补齐 Cookie/管理端变量，修正 `MAX_FILESIZE_MB` 默认为 500；重写容器挂载（含 `/app/browser-profile`）、Cookie 来源策略与管理前端操作步骤/安全边界。
+    - 更新 `cookies/README.md`：指向完整策略，并说明文件路线与 managed profile 持久化关系。
+  - 验证结果：
+    - 对照 `internal/config/config.go` 全量配置键扫描：`.env.example` 与 `README.md` 均无缺失。
+    - 文档中的默认值/模式语义与实现一致：`auto/managed/external/file`、外部同步 60 秒下限、登录会话 60~1800 秒、Dockerfile Chromium/profile 路径。
+    - 提交：`552449b docs(ops): document cookie sources and managed login`。
+  - 剩余风险/下一步：文档已同步实现，但最终 live 抽检与敏感数据收尾仍由 T12 执行；下一轮只执行 T12。
+- [x] T12 最终 review、live 抽样、敏感数据审计与提交收尾
   - 目标：逐项核对 objective、实现、测试、视觉、文档、回滚；完成 live 抽样并按边界提交代码。
   - 验证：`git status` / `git diff` / `git log`、全量测试/构建、仓库敏感文件扫描、临时文件清理。
-  - 完成记录：待填。
-  - 剩余风险/下一步：待填。
-
+  - 完成记录：
+    - 逐项核对 goal-6 objective：MP4 视频流校验、浏览器档案 Cookie 来源、管理前端 YouTube 登录、稳定 jar 共享、失败不破坏已有登录、文档与敏感边界均已落地。
+    - 代码边界审查：`origin/master..HEAD` 共 11 个提交，覆盖 download 校验、config、browser sync、lifecycle、status、managed login、admin UI、e2e 与 ops 文档；工作区仅剩本文件收尾记录。
+    - 全量质量门：`gofmt -l .` 无输出，`go vet ./...`、`go build ./...`、`go test ./... -count=1`、`go test -race ./... -count=1`、`go mod verify`、`node --check internal/admin/assets/admin.js`、`git diff --check` 全部通过。
+    - live 抽样：`YTM_LIVE_CDP=1 go test ./internal/managedlogin -run TestLiveCDPManagedBrowser` 通过；端到端登录链路由 `TestManagedFrontendLoginCookiePipelineEndToEnd` 覆盖（含搜索/音频/MP4 共用稳定 jar、断开与文件回退）。
+    - 敏感数据审计：git 跟踪文件无 cookies/profile/DevTools/SQLite 实体；`cookies/youtube.txt` 与 `browser-profile/` 被 ignore；临时 `.browser-cookies-*` / `.ytdlp-cookies-*` / `DevToolsActivePort` 无残留；goal 工件只含元数据。
+    - 回滚边界保持清晰：未配置浏览器来源时仍走旧文件策略；MP4 校验、cookies 同步、managed login 按独立提交可回退。
+  - 验证结果：
+    - 检查点 D 六项全部满足（见下方记录）。
+    - 无需新增代码提交；T11 文档提交 `552449b`，T10 及之前实现提交均已在 `master` 本地历史中。
+  - 剩余风险/下一步：真实外部 Google 账号风控与页面结构变化属于运行环境变量；仓库内已有可重复隔离端到端与 live CDP 探针。goal-6 可关闭。
 ## 最终大型检查点 D（T10–T12 后）
 
-- [ ] 浏览器档案方案在配置后可用，未配置时完全兼容旧策略。
-- [ ] 弱/失败同步不会破坏已有登录 jar。
-- [ ] 搜索和下载共享同一稳定 Cookie 来源。
-- [ ] MP4 视频流校验与坏缓存淘汰已验证。
-- [ ] 管理前端可完成真实 YouTube 登录，并通过搜索/音频/MP4 链路验证。
-- [ ] 文档、视觉验证、测试、提交与敏感数据边界完整。
+- [x] 浏览器档案方案在配置后可用，未配置时完全兼容旧策略。
+- [x] 弱/失败同步不会破坏已有登录 jar。
+- [x] 搜索和下载共享同一稳定 Cookie 来源。
+- [x] MP4 视频流校验与坏缓存淘汰已验证。
+- [x] 管理前端可完成真实 YouTube 登录，并通过搜索/音频/MP4 链路验证。
+- [x] 文档、视觉验证、测试、提交与敏感数据边界完整。
+
+### 检查点 D 证据
+
+- 兼容旧策略：默认 `COOKIE_SOURCE_MODE=auto`，未配置 `COOKIES_FROM_BROWSER` 时 external 同步不启动；文件上传/目录 drop-in 仍可用。
+- 弱同步保护：`TestBrowserSyncRejectsAnonymousCandidate` / `TestBrowserSyncKeepsStrongerLoggedInStable` 与 managed 上传保护路径证明弱/匿名候选不会覆盖强登录 jar。
+- 共享稳定 jar：`TestCookiePipelineBrowserSyncAndUploadFallback` 与 `TestManagedFrontendLoginCookiePipelineEndToEnd` 证明搜索、MP3、MP4 读取同一稳定文件。
+- MP4 校验：`internal/download` 使用 ffprobe `V:0`；坏缓存淘汰与 audio-only 拒绝已有单测与 race 全绿。
+- 管理前端登录：T9 视觉读图 + T10 隔离端到端 + T12 live CDP 探针均通过；不依赖外部真实账号密码入库。
+- 文档与安全边界：`.env.example` / README / cookies README 已同步；敏感路径 ignore；无真实 Cookie 正文进入 git。
